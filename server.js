@@ -50,7 +50,9 @@ wss.on("connection", (ws, req) => {
     });
 });
 
-server.listen(3000, "0.0.0.0", () => {
-    console.log("RoomGuardian Cloud Relay v2 running on http://localhost:3000");
-    console.log("WebSocket ready at ws://localhost:3000");
+const PORT = process.env.PORT || 3000;
+
+server.listen(PORT, "0.0.0.0", () => {
+    console.log(`RoomGuardian Cloud Relay v2 running on port ${PORT}`);
+    console.log(`WebSocket ready at ws://localhost:${PORT}`);
 });
