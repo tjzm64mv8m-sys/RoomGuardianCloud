@@ -1,0 +1,56 @@
+const http = require("http");
+const WebSocket = require("ws");
+
+let latestFrame = null;
+let frameCounter = 0;
+
+const server = http.createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/live") {
+        res.writeHead(200, {
+            "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+            "Cache-Control": "no-cache",
+            "Connection": "close",
+            "Pragma": "no-cache"
+        });
+
+        const interval = setInterval(() => {
+            if (!latestFrame) return;
+
+            res.write("--frame\r\n");
+            res.write("Content-Type: image/jpeg\r\n");
+            res.write("Content-Length: " + latestFrame.length + "\r\n\r\n");
+            res.write(latestFrame);
+            res.write("\r\n");
+        }, 100);
+
+        req.on("close", () => clearInterval(interval));
+        return;
+    }
+
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end("<h1>RoomGuardian Cloud Relay v2</h1><p>Open /live</p>");
+});
+
+const wss = new WebSocket.Server({ server });
+
+wss.on("connection", (ws, req) => {
+    console.log("Device connected");
+
+    ws.on("message", (data) => {
+        latestFrame = Buffer.from(data);
+        frameCounter++;
+
+        if (frameCounter % 30 === 0) {
+            console.log("Frames received: " + frameCounter);
+        }
+    });
+
+    ws.on("close", () => {
+        console.log("Device disconnected");
+    });
+});
+
+server.listen(3000, "0.0.0.0", () => {
+    console.log("RoomGuardian Cloud Relay v2 running on http://localhost:3000");
+    console.log("WebSocket ready at ws://localhost:3000");
+});
