@@ -104,49 +104,61 @@ const server = http.createServer((req, res) => {
     let socket = null;
     let nextPlayTime = 0;
 
-    button.addEventListener("click", async () => {
+    button.addEventListener("touchend", startAudio, { passive: false });
+button.addEventListener("click", startAudio);
 
-        if (!audioContext) {
-            const AudioContextClass =
-                window.AudioContext || window.webkitAudioContext;
+async function startAudio(event) {
+    if (event) {
+        event.preventDefault();
+    }
 
-            audioContext = new AudioContextClass();
+    if (!audioContext) {
+        const AudioContextClass =
+            window.AudioContext || window.webkitAudioContext;
 
-            if (audioContext.state === "suspended") {
-                await audioContext.resume();
-            }
+        audioContext = new AudioContextClass();
 
-            nextPlayTime = audioContext.currentTime;
+        // Unlock iPhone Safari audio output.
+        const unlockBuffer = audioContext.createBuffer(1, 1, 16000);
+        const unlockSource = audioContext.createBufferSource();
 
-            const protocol =
-                window.location.protocol === "https:" ? "wss:" : "ws:";
+        unlockSource.buffer = unlockBuffer;
+        unlockSource.connect(audioContext.destination);
+        unlockSource.start(0);
 
-            socket = new WebSocket(
-                protocol + "//" + window.location.host + "/viewer"
-            );
+        await audioContext.resume();
 
-            socket.binaryType = "arraybuffer";
+        nextPlayTime = audioContext.currentTime;
 
-            socket.onopen = () => {
-                status.textContent = "✅ Audio connected";
-                button.textContent = "🔊 Audio Enabled";
-            };
+        const protocol =
+            window.location.protocol === "https:" ? "wss:" : "ws:";
 
-            socket.onerror = () => {
-                status.textContent = "❌ Audio connection error";
-            };
+        socket = new WebSocket(
+            protocol + "//" + window.location.host + "/viewer"
+        );
 
-            socket.onclose = () => {
-                status.textContent = "❌ Audio disconnected";
-            };
+        socket.binaryType = "arraybuffer";
 
-            socket.onmessage = event => {
-                playPcmAudio(event.data);
-            };
-        } else if (audioContext.state === "suspended") {
-            await audioContext.resume();
-        }
-    });
+        socket.onopen = () => {
+            status.textContent = "✅ Audio connected";
+            button.textContent = "🔊 Audio Enabled";
+        };
+
+        socket.onerror = () => {
+            status.textContent = "❌ Audio connection error";
+        };
+
+        socket.onclose = () => {
+            status.textContent = "❌ Audio disconnected";
+        };
+
+        socket.onmessage = event => {
+            playPcmAudio(event.data);
+        };
+    } else {
+        await audioContext.resume();
+    }
+}
 
     function playPcmAudio(arrayBuffer) {
         if (!audioContext) {
