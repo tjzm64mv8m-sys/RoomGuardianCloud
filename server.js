@@ -2,7 +2,10 @@ const http = require("http");
 const WebSocket = require("ws");
 
 let latestFrame = null;
+let latestAudio = null;
+
 let frameCounter = 0;
+let audioPacketCounter = 0;
 
 const server = http.createServer((req, res) => {
     if (req.method === "GET" && req.url === "/live") {
@@ -37,13 +40,32 @@ wss.on("connection", (ws, req) => {
     console.log("Device connected");
 
     ws.on("message", (data) => {
-        latestFrame = Buffer.from(data);
+    const packet = Buffer.from(data);
+
+    const isJpeg =
+        packet.length >= 3 &&
+        packet[0] === 0xff &&
+        packet[1] === 0xd8 &&
+        packet[2] === 0xff;
+
+    if (isJpeg) {
+        latestFrame = packet;
         frameCounter++;
 
         if (frameCounter % 30 === 0) {
-            console.log("Frames received: " + frameCounter);
+            console.log("Video frames received: " + frameCounter);
         }
-    });
+
+        return;
+    }
+
+    latestAudio = packet;
+    audioPacketCounter++;
+
+    if (audioPacketCounter % 50 === 0) {
+        console.log("Audio packets received: " + audioPacketCounter);
+    }
+});
 
     ws.on("close", () => {
         console.log("Device disconnected");
