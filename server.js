@@ -8,26 +8,37 @@ let audioPacketCounter = 0;
 const audioViewers = new Set();
 
 const server = http.createServer((req, res) => {
-
-    // Existing MJPEG video stream
+    // =========================================================
+    // MJPEG VIDEO-ONLY ENDPOINT
+    // =========================================================
     if (req.method === "GET" && req.url === "/live") {
         res.writeHead(200, {
             "Content-Type": "multipart/x-mixed-replace; boundary=frame",
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
             "Connection": "close",
-            "Pragma": "no-cache"
+            "Pragma": "no-cache",
+            "Expires": "0"
         });
 
         const interval = setInterval(() => {
-            if (!latestFrame) {
+            if (!latestFrame || res.destroyed) {
                 return;
             }
 
-            res.write("--frame\r\n");
-            res.write("Content-Type: image/jpeg\r\n");
-            res.write("Content-Length: " + latestFrame.length + "\r\n\r\n");
-            res.write(latestFrame);
-            res.write("\r\n");
+            try {
+                res.write("--frame\r\n");
+                res.write("Content-Type: image/jpeg\r\n");
+                res.write(
+                    "Content-Length: " +
+                    latestFrame.length +
+                    "\r\n\r\n"
+                );
+
+                res.write(latestFrame);
+                res.write("\r\n");
+            } catch (error) {
+                clearInterval(interval);
+            }
         }, 100);
 
         req.on("close", () => {
@@ -37,22 +48,35 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    // Combined video + audio viewer
+    // =========================================================
+    // VIDEO + AUDIO VIEWER PAGE
+    // =========================================================
     if (req.method === "GET" && req.url === "/watch") {
         res.writeHead(200, {
             "Content-Type": "text/html; charset=utf-8",
-            "Cache-Control": "no-cache"
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
         });
 
         res.end(`
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta name="viewport"
-          content="width=device-width, initial-scale=1, maximum-scale=1">
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1, maximum-scale=1"
+    >
+
     <title>RoomGuardian Live</title>
 
     <style>
+        * {
+            box-sizing: border-box;
+        }
+
         body {
             margin: 0;
             background: #111;
@@ -61,141 +85,320 @@ const server = http.createServer((req, res) => {
             text-align: center;
         }
 
-        h2 {
-            margin: 14px 0;
+        header {
+            padding: 12px;
+            background: #1b1b1b;
         }
 
-        img {
+        h2 {
+            margin: 0;
+            font-size: 22px;
+        }
+
+        .video-container {
+            width: 100%;
+            background: black;
+        }
+
+        .video-container img {
             display: block;
             width: 100%;
             height: auto;
             background: black;
         }
 
+        .controls {
+            padding: 18px 10px 8px;
+        }
+
         button {
-            margin: 18px;
-            padding: 14px 24px;
-            font-size: 18px;
+            min-width: 145px;
+            margin: 6px;
+            padding: 14px 18px;
             border: 0;
             border-radius: 10px;
+            font-size: 17px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        #audioOnButton {
+            background: #2e9d48;
+            color: white;
+        }
+
+        #audioOffButton {
+            background: #b43b3b;
+            color: white;
         }
 
         #status {
-            margin-bottom: 20px;
+            min-height: 28px;
+            margin: 5px 10px 20px;
+            font-size: 16px;
         }
     </style>
 </head>
 
 <body>
 
-<h2>RoomGuardian Live</h2>
+<header>
+    <h2>📹 RoomGuardian Live</h2>
+</header>
 
-<img src="/live" alt="RoomGuardian live video">
+<div class="video-container">
+    <img
+        src="/live"
+        alt="RoomGuardian live video"
+    >
+</div>
 
-<button id="audioButton">🔊 Enable Audio</button>
+<div class="controls">
+    <button id="audioOnButton">
+        🔊 Audio On
+    </button>
 
-<div id="status">Audio is off</div>
+    <button id="audioOffButton">
+        🔇 Audio Off
+    </button>
+</div>
+
+<div id="status">
+    🔇 Audio is off
+</div>
 
 <script>
-    const button = document.getElementById("audioButton");
-    const status = document.getElementById("status");
+    const audioOnButton =
+        document.getElementById("audioOnButton");
+
+    const audioOffButton =
+        document.getElementById("audioOffButton");
+
+    const status =
+        document.getElementById("status");
 
     let audioContext = null;
-    let socket = null;
+    let audioSocket = null;
     let nextPlayTime = 0;
+    let startingAudio = false;
 
-    button.addEventListener("touchend", startAudio, { passive: false });
-button.addEventListener("click", startAudio);
+    audioOnButton.addEventListener(
+        "click",
+        startAudio
+    );
 
-async function startAudio(event) {
-    if (event) {
-        event.preventDefault();
-    }
+    audioOffButton.addEventListener(
+        "click",
+        stopAudio
+    );
 
-    if (!audioContext) {
-        const AudioContextClass =
-            window.AudioContext || window.webkitAudioContext;
+    async function startAudio(event) {
+        if (event) {
+            event.preventDefault();
+        }
 
-        audioContext = new AudioContextClass();
+        if (startingAudio) {
+            return;
+        }
 
-        // Unlock iPhone Safari audio output.
-        const unlockBuffer = audioContext.createBuffer(1, 1, 16000);
-        const unlockSource = audioContext.createBufferSource();
+        if (
+            audioSocket &&
+            audioSocket.readyState === WebSocket.OPEN &&
+            audioContext
+        ) {
+            if (audioContext.state === "suspended") {
+                await audioContext.resume();
+            }
 
-        unlockSource.buffer = unlockBuffer;
-        unlockSource.connect(audioContext.destination);
-        unlockSource.start(0);
-
-        await audioContext.resume();
-
-        nextPlayTime = audioContext.currentTime;
-
-        const protocol =
-            window.location.protocol === "https:" ? "wss:" : "ws:";
-
-        socket = new WebSocket(
-            protocol + "//" + window.location.host + "/viewer"
-        );
-
-        socket.binaryType = "arraybuffer";
-
-        socket.onopen = () => {
             status.textContent = "✅ Audio connected";
-            button.textContent = "🔊 Audio Enabled";
-        };
+            return;
+        }
 
-        socket.onerror = () => {
-            status.textContent = "❌ Audio connection error";
-        };
+        startingAudio = true;
+        status.textContent = "⏳ Connecting audio...";
 
-        socket.onclose = () => {
-            status.textContent = "❌ Audio disconnected";
-        };
+        try {
+            const AudioContextClass =
+                window.AudioContext ||
+                window.webkitAudioContext;
 
-        socket.onmessage = event => {
-            playPcmAudio(event.data);
-        };
-    } else {
-        await audioContext.resume();
+            if (!AudioContextClass) {
+                status.textContent =
+                    "❌ Audio is not supported by this browser";
+
+                startingAudio = false;
+                return;
+            }
+
+            if (audioContext) {
+                try {
+                    await audioContext.close();
+                } catch (ignored) {
+                }
+
+                audioContext = null;
+            }
+
+            audioContext = new AudioContextClass({
+                sampleRate: 16000
+            });
+
+            // Unlock iPhone Safari audio after user tap.
+            const unlockBuffer =
+                audioContext.createBuffer(1, 1, 16000);
+
+            const unlockSource =
+                audioContext.createBufferSource();
+
+            unlockSource.buffer = unlockBuffer;
+            unlockSource.connect(audioContext.destination);
+            unlockSource.start(0);
+
+            if (audioContext.state === "suspended") {
+                await audioContext.resume();
+            }
+
+            nextPlayTime = audioContext.currentTime;
+
+            const protocol =
+                window.location.protocol === "https:"
+                    ? "wss:"
+                    : "ws:";
+
+            audioSocket = new WebSocket(
+                protocol +
+                "//" +
+                window.location.host +
+                "/viewer"
+            );
+
+            audioSocket.binaryType = "arraybuffer";
+
+            audioSocket.onopen = () => {
+                startingAudio = false;
+
+                status.textContent =
+                    "✅ Audio connected";
+
+                audioOnButton.textContent =
+                    "✅ Audio On";
+            };
+
+            audioSocket.onmessage = event => {
+                playPcmAudio(event.data);
+            };
+
+            audioSocket.onerror = () => {
+                startingAudio = false;
+
+                status.textContent =
+                    "❌ Audio connection error";
+            };
+
+            audioSocket.onclose = () => {
+                startingAudio = false;
+                audioSocket = null;
+
+                status.textContent =
+                    "🔇 Audio is off";
+
+                audioOnButton.textContent =
+                    "🔊 Audio On";
+            };
+
+        } catch (error) {
+            startingAudio = false;
+
+            status.textContent =
+                "❌ Audio failed: " +
+                (error.message || "unknown error");
+        }
     }
-}
+
+    async function stopAudio(event) {
+        if (event) {
+            event.preventDefault();
+        }
+
+        startingAudio = false;
+
+        if (audioSocket) {
+            try {
+                audioSocket.close(1000, "audio stopped");
+            } catch (ignored) {
+            }
+
+            audioSocket = null;
+        }
+
+        if (audioContext) {
+            try {
+                await audioContext.close();
+            } catch (ignored) {
+            }
+
+            audioContext = null;
+        }
+
+        nextPlayTime = 0;
+
+        status.textContent =
+            "🔇 Audio is off";
+
+        audioOnButton.textContent =
+            "🔊 Audio On";
+    }
 
     function playPcmAudio(arrayBuffer) {
-        if (!audioContext) {
+        if (
+            !audioContext ||
+            audioContext.state === "closed"
+        ) {
             return;
         }
 
         const view = new DataView(arrayBuffer);
-        const sampleCount = Math.floor(view.byteLength / 2);
+        const sampleCount =
+            Math.floor(view.byteLength / 2);
 
-        if (sampleCount === 0) {
+        if (sampleCount <= 0) {
             return;
         }
 
         const audioBuffer =
-            audioContext.createBuffer(1, sampleCount, 16000);
+            audioContext.createBuffer(
+                1,
+                sampleCount,
+                16000
+            );
 
-        const channel = audioBuffer.getChannelData(0);
+        const channel =
+            audioBuffer.getChannelData(0);
 
         for (let i = 0; i < sampleCount; i++) {
-            channel[i] = view.getInt16(i * 2, true) / 32768;
+            channel[i] =
+                view.getInt16(i * 2, true) / 32768;
         }
 
-        const source = audioContext.createBufferSource();
+        const source =
+            audioContext.createBufferSource();
+
         source.buffer = audioBuffer;
         source.connect(audioContext.destination);
 
         const now = audioContext.currentTime;
+        const maximumAudioDelay = 0.25;
 
-        // Prevent old audio packets building up and causing a long delay.
-const maximumAudioDelay = 0.25;
+        // Avoid building a long queue of old audio.
+        if (
+            nextPlayTime < now ||
+            nextPlayTime - now > maximumAudioDelay
+        ) {
+            nextPlayTime = now;
+        }
 
-if (nextPlayTime < now || nextPlayTime - now > maximumAudioDelay) {
-    nextPlayTime = now;
-}
-
-source.start(nextPlayTime);
-nextPlayTime += audioBuffer.duration;
+        source.start(nextPlayTime);
+        nextPlayTime += audioBuffer.duration;
     }
 </script>
 
@@ -206,36 +409,84 @@ nextPlayTime += audioBuffer.duration;
         return;
     }
 
+    // =========================================================
+    // HOME PAGE
+    // =========================================================
     res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8"
     });
 
     res.end(`
-        <h1>RoomGuardian Cloud Relay</h1>
-        <p><a href="/watch">Open video with audio</a></p>
-        <p><a href="/live">Open video only</a></p>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+    <title>RoomGuardian Cloud</title>
+</head>
+
+<body style="
+    font-family: Arial, sans-serif;
+    text-align: center;
+    padding: 30px;
+">
+    <h1>RoomGuardian Cloud Relay</h1>
+
+    <p>
+        <a href="/watch">
+            Open video with audio
+        </a>
+    </p>
+
+    <p>
+        <a href="/live">
+            Open video only
+        </a>
+    </p>
+</body>
+</html>
     `);
 });
 
-const wss = new WebSocket.Server({ server });
+// =============================================================
+// WEBSOCKET SERVER
+// =============================================================
+
+const wss = new WebSocket.Server({
+    server
+});
 
 wss.on("connection", (ws, req) => {
-
-    // Browser audio viewer
+    // Browser audio viewer connection
     if (req.url === "/viewer") {
         audioViewers.add(ws);
-        console.log("Audio viewer connected");
+
+        console.log(
+            "Audio viewer connected. Total viewers: " +
+            audioViewers.size
+        );
 
         ws.on("close", () => {
             audioViewers.delete(ws);
-            console.log("Audio viewer disconnected");
+
+            console.log(
+                "Audio viewer disconnected. Total viewers: " +
+                audioViewers.size
+            );
+        });
+
+        ws.on("error", () => {
+            audioViewers.delete(ws);
         });
 
         return;
     }
 
-    // Samsung RoomGuardian device
-    console.log("Device connected");
+    // Samsung RoomGuardian device connection
+    console.log("RoomGuardian device connected");
 
     ws.on("message", data => {
         const packet = Buffer.from(data);
@@ -247,45 +498,71 @@ wss.on("connection", (ws, req) => {
         const packetType = packet[0];
         const payload = packet.subarray(1);
 
-        // Video
+        // Video JPEG packet
         if (packetType === 0x01) {
             latestFrame = payload;
             frameCounter++;
 
             if (frameCounter % 30 === 0) {
-                console.log("Video frames received: " + frameCounter);
+                console.log(
+                    "Video frames received: " +
+                    frameCounter
+                );
             }
 
             return;
         }
 
-        // Audio
+        // Raw PCM audio packet
         if (packetType === 0x02) {
             audioPacketCounter++;
 
             for (const viewer of audioViewers) {
-                if (viewer.readyState === WebSocket.OPEN) {
+                if (
+                    viewer.readyState ===
+                    WebSocket.OPEN
+                ) {
                     viewer.send(payload);
                 }
             }
 
             if (audioPacketCounter % 50 === 0) {
                 console.log(
-                    "Audio packets received: " + audioPacketCounter
+                    "Audio packets received: " +
+                    audioPacketCounter
                 );
             }
         }
     });
 
     ws.on("close", () => {
-        console.log("Device disconnected");
+        console.log(
+            "RoomGuardian device disconnected"
+        );
+    });
+
+    ws.on("error", error => {
+        console.error(
+            "RoomGuardian device error:",
+            error.message
+        );
     });
 });
 
-const PORT = process.env.PORT || 3000;
+// =============================================================
+// SERVER START
+// =============================================================
+
+const PORT =
+    process.env.PORT || 3000;
 
 server.listen(PORT, "0.0.0.0", () => {
     console.log(
-        "RoomGuardian Cloud Relay running on port " + PORT
+        "RoomGuardian Cloud Relay running on port " +
+        PORT
+    );
+
+    console.log(
+        "Viewer available at /watch"
     );
 });
