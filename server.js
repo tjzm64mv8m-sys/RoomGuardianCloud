@@ -187,12 +187,15 @@ async function startAudio(event) {
 
         const now = audioContext.currentTime;
 
-        if (nextPlayTime < now) {
-            nextPlayTime = now;
-        }
+        // Prevent old audio packets building up and causing a long delay.
+const maximumAudioDelay = 0.25;
 
-        source.start(nextPlayTime);
-        nextPlayTime += audioBuffer.duration;
+if (nextPlayTime < now || nextPlayTime - now > maximumAudioDelay) {
+    nextPlayTime = now;
+}
+
+source.start(nextPlayTime);
+nextPlayTime += audioBuffer.duration;
     }
 </script>
 
