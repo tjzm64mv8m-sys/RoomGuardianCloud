@@ -42,14 +42,15 @@ wss.on("connection", (ws, req) => {
     ws.on("message", (data) => {
     const packet = Buffer.from(data);
 
-    const isJpeg =
-        packet.length >= 3 &&
-        packet[0] === 0xff &&
-        packet[1] === 0xd8 &&
-        packet[2] === 0xff;
+    if (packet.length < 2) {
+        return;
+    }
 
-    if (isJpeg) {
-        latestFrame = packet;
+    const packetType = packet[0];
+    const payload = packet.subarray(1);
+
+    if (packetType === 0x01) {
+        latestFrame = payload;
         frameCounter++;
 
         if (frameCounter % 30 === 0) {
@@ -59,11 +60,13 @@ wss.on("connection", (ws, req) => {
         return;
     }
 
-    latestAudio = packet;
-    audioPacketCounter++;
+    if (packetType === 0x02) {
+        latestAudio = payload;
+        audioPacketCounter++;
 
-    if (audioPacketCounter % 50 === 0) {
-        console.log("Audio packets received: " + audioPacketCounter);
+        if (audioPacketCounter % 50 === 0) {
+            console.log("Audio packets received: " + audioPacketCounter);
+        }
     }
 });
 
