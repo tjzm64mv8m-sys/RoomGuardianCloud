@@ -6,12 +6,11 @@ let frameCounter = 0;
 let audioPacketCounter = 0;
 
 const audioViewers = new Set();
-
 let deviceSocket = null;
 
 const server = http.createServer((req, res) => {
 
-    // Existing MJPEG video stream
+    // MJPEG video stream
     if (req.method === "GET" && req.url === "/live") {
         res.writeHead(200, {
             "Content-Type": "multipart/x-mixed-replace; boundary=frame",
@@ -27,7 +26,11 @@ const server = http.createServer((req, res) => {
 
             res.write("--frame\r\n");
             res.write("Content-Type: image/jpeg\r\n");
-            res.write("Content-Length: " + latestFrame.length + "\r\n\r\n");
+            res.write(
+                "Content-Length: " +
+                latestFrame.length +
+                "\r\n\r\n"
+            );
             res.write(latestFrame);
             res.write("\r\n");
         }, 100);
@@ -39,7 +42,7 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    // Combined video + audio viewer
+    // Video, audio and talkback page
     if (req.method === "GET" && req.url === "/watch") {
         res.writeHead(200, {
             "Content-Type": "text/html; charset=utf-8",
@@ -48,72 +51,271 @@ const server = http.createServer((req, res) => {
 
         res.end(`
 <!DOCTYPE html>
-<html>
+<html lang="en">
+
 <head>
-    <meta name="viewport"
-          content="width=device-width, initial-scale=1, maximum-scale=1">
+    <meta charset="utf-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width,
+                 initial-scale=1,
+                 maximum-scale=1,
+                 viewport-fit=cover"
+    >
+
     <title>RoomGuardian Live</title>
 
     <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
         body {
             margin: 0;
-            background: #111;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0d0d0d;
             color: white;
             font-family: Arial, sans-serif;
+        }
+
+        body {
+            min-height: 100vh;
+            min-height: 100svh;
+            min-height: 100dvh;
+        }
+
+        .app {
+            width: 100%;
+            height: 100vh;
+            height: 100svh;
+            height: 100dvh;
+
+            display: grid;
+            grid-template-rows:
+                auto
+                minmax(0, 1fr)
+                auto;
+
+            background: #0d0d0d;
+        }
+
+        .title {
+            margin: 0;
+            padding: 8px 12px;
+
+            font-size: 19px;
+            line-height: 1.2;
+            font-weight: 600;
+
             text-align: center;
+            background: #151515;
         }
 
-        h2 {
-            margin: 14px 0;
+        .video-container {
+            position: relative;
+
+            width: 100%;
+            min-height: 0;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            overflow: hidden;
+            background: black;
         }
 
-        img {
-    display: block;
-    width: auto;
-    height: 80vh;
-    max-width: 100%;
-    margin: 0 auto;
-    background: black;
-    transform: rotate(90deg);
-}
+        .video-container img {
+            display: block;
+
+            width: auto;
+            height: min(92vw, 70dvh);
+
+            max-width: none;
+            object-fit: contain;
+
+            transform: rotate(90deg);
+            transform-origin: center;
+
+            background: black;
+        }
+
+        .controls {
+            width: 100%;
+
+            padding-top: 10px;
+            padding-left: 12px;
+            padding-right: 12px;
+
+            /*
+             * Extra bottom space prevents Safari's
+             * bottom toolbar covering the buttons.
+             */
+            padding-bottom:
+                calc(
+                    82px +
+                    env(safe-area-inset-bottom)
+                );
+
+            background: #171717;
+            border-top: 1px solid #2c2c2c;
+        }
+
+        .audio-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+
+            gap: 10px;
+            margin-bottom: 10px;
+        }
 
         button {
-            margin: 18px;
-            padding: 14px 24px;
-            font-size: 18px;
+            width: 100%;
+            min-height: 50px;
+
+            padding: 11px 10px;
+
             border: 0;
-            border-radius: 10px;
+            border-radius: 12px;
+
+            font-size: 16px;
+            font-weight: 600;
+
+            cursor: pointer;
+
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        #audioOnButton {
+            background: #f2f2f2;
+            color: #111111;
+        }
+
+        #audioOffButton {
+            background: #3b3b3b;
+            color: white;
         }
 
         #talkButton {
+            background: #f2f2f2;
+            color: #111111;
+
             touch-action: none;
             user-select: none;
             -webkit-user-select: none;
-        }          
-        
+        }
+
+        #talkButton.talking {
+            background: #c62828;
+            color: white;
+        }
 
         #status {
-            margin-bottom: 20px;
+            min-height: 18px;
+
+            margin-top: 8px;
+
+            font-size: 13px;
+            line-height: 18px;
+
+            text-align: center;
+            color: #cccccc;
+        }
+
+        @media (orientation: landscape) {
+
+            .title {
+                padding: 5px 10px;
+                font-size: 16px;
+            }
+
+            .video-container img {
+                height: min(68vw, 62dvh);
+            }
+
+            .controls {
+                padding-top: 8px;
+
+                padding-bottom:
+                    calc(
+                        58px +
+                        env(safe-area-inset-bottom)
+                    );
+            }
+
+            button {
+                min-height: 44px;
+                font-size: 15px;
+            }
         }
     </style>
 </head>
 
 <body>
 
-<h2>RoomGuardian Live</h2>
+<div class="app">
 
-<img src="/live" alt="RoomGuardian live video">
+    <h1 class="title">
+        RoomGuardian Live
+    </h1>
 
-<button id="audioButton">🔊 Enable Audio</button>
+    <div class="video-container">
 
-<button id="talkButton">🎤 Hold to Talk</button>
+        <img
+            src="/live"
+            alt="RoomGuardian live video"
+        >
 
-<div id="status">Audio is off</div>
+    </div>
+
+    <div class="controls">
+
+        <div class="audio-row">
+
+            <button id="audioOnButton">
+                🔊 Enable Audio
+            </button>
+
+            <button id="audioOffButton">
+                🔇 Disable Audio
+            </button>
+
+        </div>
+
+        <button id="talkButton">
+            🎤 Hold to Talk
+        </button>
+
+        <div id="status">
+            Audio is off
+        </div>
+
+    </div>
+
+</div>
 
 <script>
-    const button = document.getElementById("audioButton");
-    const status = document.getElementById("status");
-    const talkButton = document.getElementById("talkButton");
+    const audioOnButton =
+        document.getElementById("audioOnButton");
+
+    const audioOffButton =
+        document.getElementById("audioOffButton");
+
+    const talkButton =
+        document.getElementById("talkButton");
+
+    const status =
+        document.getElementById("status");
+
+
+    let audioContext = null;
+    let socket = null;
+    let nextPlayTime = 0;
+
 
     let talkSocket = null;
     let talkStream = null;
@@ -121,285 +323,606 @@ const server = http.createServer((req, res) => {
     let talkProcessor = null;
     let talking = false;
 
-    
 
-    let audioContext = null;
-    let socket = null;
-    let nextPlayTime = 0;
+    audioOnButton.addEventListener(
+        "touchend",
+        startAudio,
+        { passive: false }
+    );
 
-    button.addEventListener("touchend", startAudio, { passive: false });
-button.addEventListener("click", startAudio);
+    audioOnButton.addEventListener(
+        "click",
+        startAudio
+    );
 
-async function startAudio(event) {
-    if (event) {
-        event.preventDefault();
+
+    audioOffButton.addEventListener(
+        "touchend",
+        stopAudio,
+        { passive: false }
+    );
+
+    audioOffButton.addEventListener(
+        "click",
+        stopAudio
+    );
+
+
+    async function startAudio(event) {
+
+        if (event) {
+            event.preventDefault();
+        }
+
+        if (!audioContext) {
+
+            const AudioContextClass =
+                window.AudioContext ||
+                window.webkitAudioContext;
+
+            audioContext =
+                new AudioContextClass();
+
+
+            // Unlock iPhone Safari audio.
+            const unlockBuffer =
+                audioContext.createBuffer(
+                    1,
+                    1,
+                    16000
+                );
+
+            const unlockSource =
+                audioContext.createBufferSource();
+
+            unlockSource.buffer =
+                unlockBuffer;
+
+            unlockSource.connect(
+                audioContext.destination
+            );
+
+            unlockSource.start(0);
+
+
+            await audioContext.resume();
+
+            nextPlayTime =
+                audioContext.currentTime;
+
+
+            const protocol =
+                window.location.protocol === "https:"
+                    ? "wss:"
+                    : "ws:";
+
+
+            socket = new WebSocket(
+                protocol +
+                "//" +
+                window.location.host +
+                "/viewer"
+            );
+
+            socket.binaryType =
+                "arraybuffer";
+
+
+            socket.onopen = () => {
+
+                status.textContent =
+                    "✅ Audio connected";
+
+                audioOnButton.textContent =
+                    "✅ Audio Enabled";
+            };
+
+
+            socket.onerror = () => {
+
+                status.textContent =
+                    "❌ Audio connection error";
+            };
+
+
+            socket.onclose = () => {
+
+                if (audioContext) {
+
+                    status.textContent =
+                        "❌ Audio disconnected";
+                }
+            };
+
+
+            socket.onmessage = event => {
+
+                playPcmAudio(
+                    event.data
+                );
+            };
+
+        } else {
+
+            await audioContext.resume();
+        }
     }
 
-    if (!audioContext) {
-        const AudioContextClass =
-            window.AudioContext || window.webkitAudioContext;
 
-        audioContext = new AudioContextClass();
+    function stopAudio(event) {
 
-        // Unlock iPhone Safari audio output.
-        const unlockBuffer = audioContext.createBuffer(1, 1, 16000);
-        const unlockSource = audioContext.createBufferSource();
+        if (event) {
+            event.preventDefault();
+        }
 
-        unlockSource.buffer = unlockBuffer;
-        unlockSource.connect(audioContext.destination);
-        unlockSource.start(0);
+        if (socket) {
 
-        await audioContext.resume();
+            socket.onclose = null;
 
-        nextPlayTime = audioContext.currentTime;
+            try {
+                socket.close();
+            } catch (ignored) {
+            }
 
-        const protocol =
-            window.location.protocol === "https:" ? "wss:" : "ws:";
+            socket = null;
+        }
 
-        socket = new WebSocket(
-            protocol + "//" + window.location.host + "/viewer"
-        );
+        if (audioContext) {
 
-        socket.binaryType = "arraybuffer";
+            try {
+                audioContext.close();
+            } catch (ignored) {
+            }
 
-        socket.onopen = () => {
-            status.textContent = "✅ Audio connected";
-            button.textContent = "🔊 Audio Enabled";
-        };
+            audioContext = null;
+        }
 
-        socket.onerror = () => {
-            status.textContent = "❌ Audio connection error";
-        };
+        nextPlayTime = 0;
 
-        socket.onclose = () => {
-            status.textContent = "❌ Audio disconnected";
-        };
+        audioOnButton.textContent =
+            "🔊 Enable Audio";
 
-        socket.onmessage = event => {
-            playPcmAudio(event.data);
-        };
-    } else {
-        await audioContext.resume();
+        status.textContent =
+            "Audio is off";
     }
-}
+
 
     function playPcmAudio(arrayBuffer) {
+
         if (!audioContext) {
             return;
         }
 
-        const view = new DataView(arrayBuffer);
-        const sampleCount = Math.floor(view.byteLength / 2);
+        const view =
+            new DataView(arrayBuffer);
+
+        const sampleCount =
+            Math.floor(
+                view.byteLength / 2
+            );
 
         if (sampleCount === 0) {
             return;
         }
 
         const audioBuffer =
-            audioContext.createBuffer(1, sampleCount, 16000);
+            audioContext.createBuffer(
+                1,
+                sampleCount,
+                16000
+            );
 
-        const channel = audioBuffer.getChannelData(0);
+        const channel =
+            audioBuffer.getChannelData(0);
 
-        for (let i = 0; i < sampleCount; i++) {
-            channel[i] = view.getInt16(i * 2, true) / 32768;
+
+        for (
+            let i = 0;
+            i < sampleCount;
+            i++
+        ) {
+
+            channel[i] =
+                view.getInt16(
+                    i * 2,
+                    true
+                ) / 32768;
         }
 
-        const source = audioContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioContext.destination);
 
-        const now = audioContext.currentTime;
+        const source =
+            audioContext.createBufferSource();
 
-        // Prevent old audio packets building up and causing a long delay.
-const maximumAudioDelay = 0.25;
+        source.buffer =
+            audioBuffer;
 
-if (nextPlayTime < now || nextPlayTime - now > maximumAudioDelay) {
-    nextPlayTime = now;
-}
+        source.connect(
+            audioContext.destination
+        );
 
-source.start(nextPlayTime);
-nextPlayTime += audioBuffer.duration;
+
+        const now =
+            audioContext.currentTime;
+
+        const maximumAudioDelay =
+            0.25;
+
+
+        if (
+            nextPlayTime < now ||
+            nextPlayTime - now >
+                maximumAudioDelay
+        ) {
+
+            nextPlayTime = now;
+        }
+
+
+        source.start(
+            nextPlayTime
+        );
+
+        nextPlayTime +=
+            audioBuffer.duration;
     }
 
-    talkButton.addEventListener("touchstart", startTalk, { passive: false });
-    talkButton.addEventListener("touchend", stopTalk, { passive: false });
-    talkButton.addEventListener("touchcancel", stopTalk, { passive: false });
 
-    talkButton.addEventListener("mousedown", startTalk);
-    talkButton.addEventListener("mouseup", stopTalk);
-    talkButton.addEventListener("mouseleave", stopTalk);
+    talkButton.addEventListener(
+        "touchstart",
+        startTalk,
+        { passive: false }
+    );
+
+    talkButton.addEventListener(
+        "touchend",
+        stopTalk,
+        { passive: false }
+    );
+
+    talkButton.addEventListener(
+        "touchcancel",
+        stopTalk,
+        { passive: false }
+    );
+
+
+    talkButton.addEventListener(
+        "mousedown",
+        startTalk
+    );
+
+    talkButton.addEventListener(
+        "mouseup",
+        stopTalk
+    );
+
+    talkButton.addEventListener(
+        "mouseleave",
+        stopTalk
+    );
+
 
     async function startTalk(event) {
+
         if (event) {
-        event.preventDefault();
+            event.preventDefault();
         }
 
         if (talking) {
-        return;
+            return;
         }
 
         talking = true;
-        talkButton.textContent = "🔴 Talking...";
+
+        talkButton.textContent =
+            "🔴 Talking...";
+
+        talkButton.classList.add(
+            "talking"
+        );
+
 
         try {
-            talkStream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true,
-                    channelCount: 1
-                },
-                video: false
-            });
+
+            talkStream =
+                await navigator.mediaDevices
+                    .getUserMedia({
+
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true,
+                            channelCount: 1
+                        },
+
+                        video: false
+                    });
+
 
             const AudioContextClass =
-                window.AudioContext || window.webkitAudioContext;
+                window.AudioContext ||
+                window.webkitAudioContext;
 
-            talkAudioContext = new AudioContextClass();
+
+            talkAudioContext =
+                new AudioContextClass();
+
             await talkAudioContext.resume();
 
+
             const protocol =
-                window.location.protocol === "https:" ? "wss:" : "ws:";
+                window.location.protocol === "https:"
+                    ? "wss:"
+                    : "ws:";
 
-            talkSocket = new WebSocket(
-                protocol + "//" + window.location.host + "/talk"
-            );
 
-            talkSocket.binaryType = "arraybuffer";
-
-            const microphoneSource =
-                talkAudioContext.createMediaStreamSource(talkStream);
-
-            talkProcessor =
-                talkAudioContext.createScriptProcessor(4096, 1, 1);
-
-            talkProcessor.onaudioprocess = audioEvent => {
-                if (!talking ||
-                        !talkSocket ||
-                        talkSocket.readyState !== WebSocket.OPEN) {
-                    return;
-                }
-
-                const input =
-                    audioEvent.inputBuffer.getChannelData(0);
-
-                const downsampled = downsampleTo16000(
-                    input,
-                    talkAudioContext.sampleRate
+            talkSocket =
+                new WebSocket(
+                    protocol +
+                    "//" +
+                    window.location.host +
+                    "/talk"
                 );
 
-                const pcm16 = new Int16Array(downsampled.length);
 
-                for (let i = 0; i < downsampled.length; i++) {
-                    const sample = Math.max(
-                        -1,
-                        Math.min(1, downsampled[i])
+            talkSocket.binaryType =
+                "arraybuffer";
+
+
+            const microphoneSource =
+                talkAudioContext
+                    .createMediaStreamSource(
+                        talkStream
                     );
 
-                    pcm16[i] =
-                        sample < 0
-                            ? sample * 32768
-                            : sample * 32767;
-                }
 
-                talkSocket.send(pcm16.buffer);
-            };
+            talkProcessor =
+                talkAudioContext
+                    .createScriptProcessor(
+                        4096,
+                        1,
+                        1
+                    );
 
-            microphoneSource.connect(talkProcessor);
-            talkProcessor.connect(talkAudioContext.destination);
+
+            talkProcessor.onaudioprocess =
+                audioEvent => {
+
+                    if (
+                        !talking ||
+                        !talkSocket ||
+                        talkSocket.readyState !==
+                            WebSocket.OPEN
+                    ) {
+
+                        return;
+                    }
+
+
+                    const input =
+                        audioEvent
+                            .inputBuffer
+                            .getChannelData(0);
+
+
+                    const downsampled =
+                        downsampleTo16000(
+                            input,
+                            talkAudioContext
+                                .sampleRate
+                        );
+
+
+                    const pcm16 =
+                        new Int16Array(
+                            downsampled.length
+                        );
+
+
+                    for (
+                        let i = 0;
+                        i < downsampled.length;
+                        i++
+                    ) {
+
+                        const sample =
+                            Math.max(
+                                -1,
+                                Math.min(
+                                    1,
+                                    downsampled[i]
+                                )
+                            );
+
+
+                        pcm16[i] =
+                            sample < 0
+                                ? sample * 32768
+                                : sample * 32767;
+                    }
+
+
+                    talkSocket.send(
+                        pcm16.buffer
+                    );
+                };
+
+
+            microphoneSource.connect(
+                talkProcessor
+            );
+
+            talkProcessor.connect(
+                talkAudioContext.destination
+            );
+
 
         } catch (error) {
+
             talking = false;
-            talkButton.textContent = "🎤 Hold to Talk";
+
+            talkButton.textContent =
+                "🎤 Hold to Talk";
+
+            talkButton.classList.remove(
+                "talking"
+            );
+
             status.textContent =
-                "❌ Microphone error: " + error.message;
-    }
-}
+                "❌ Microphone error: " +
+                error.message;
 
-function stopTalk(event) {
-    if (event) {
-        event.preventDefault();
+            stopTalk();
+        }
     }
 
-    talking = false;
-    talkButton.textContent = "🎤 Hold to Talk";
 
-    if (talkProcessor) {
-        try {
-            talkProcessor.disconnect();
-        } catch (ignored) {
+    function stopTalk(event) {
+
+        if (event) {
+            event.preventDefault();
         }
 
-        talkProcessor.onaudioprocess = null;
-        talkProcessor = null;
-    }
+        talking = false;
 
-    if (talkStream) {
-        talkStream.getTracks().forEach(track => track.stop());
-        talkStream = null;
-    }
+        talkButton.textContent =
+            "🎤 Hold to Talk";
 
-    if (talkSocket) {
-        try {
-            talkSocket.close();
-        } catch (ignored) {
+        talkButton.classList.remove(
+            "talking"
+        );
+
+
+        if (talkProcessor) {
+
+            try {
+                talkProcessor.disconnect();
+            } catch (ignored) {
+            }
+
+            talkProcessor.onaudioprocess =
+                null;
+
+            talkProcessor = null;
         }
 
-        talkSocket = null;
-    }
 
-    if (talkAudioContext) {
-        try {
-            talkAudioContext.close();
-        } catch (ignored) {
+        if (talkStream) {
+
+            talkStream
+                .getTracks()
+                .forEach(
+                    track => track.stop()
+                );
+
+            talkStream = null;
         }
 
-        talkAudioContext = null;
-    }
-}
 
-function downsampleTo16000(input, inputSampleRate) {
-    const outputSampleRate = 16000;
+        if (talkSocket) {
 
-    if (inputSampleRate === outputSampleRate) {
-        return input;
-    }
+            try {
+                talkSocket.close();
+            } catch (ignored) {
+            }
 
-    const ratio = inputSampleRate / outputSampleRate;
-    const outputLength =
-        Math.round(input.length / ratio);
-
-    const output = new Float32Array(outputLength);
-
-    let inputPosition = 0;
-
-    for (let outputPosition = 0;
-         outputPosition < outputLength;
-         outputPosition++) {
-
-        const nextInputPosition =
-            Math.round((outputPosition + 1) * ratio);
-
-        let total = 0;
-        let count = 0;
-
-        for (let i = inputPosition;
-             i < nextInputPosition && i < input.length;
-             i++) {
-
-            total += input[i];
-            count++;
+            talkSocket = null;
         }
 
-        output[outputPosition] =
-            count > 0 ? total / count : 0;
 
-        inputPosition = nextInputPosition;
+        if (talkAudioContext) {
+
+            try {
+                talkAudioContext.close();
+            } catch (ignored) {
+            }
+
+            talkAudioContext = null;
+        }
     }
 
-    return output;
-}
-    
+
+    function downsampleTo16000(
+        input,
+        inputSampleRate
+    ) {
+
+        const outputSampleRate =
+            16000;
+
+
+        if (
+            inputSampleRate ===
+            outputSampleRate
+        ) {
+
+            return input;
+        }
+
+
+        const ratio =
+            inputSampleRate /
+            outputSampleRate;
+
+
+        const outputLength =
+            Math.round(
+                input.length / ratio
+            );
+
+
+        const output =
+            new Float32Array(
+                outputLength
+            );
+
+
+        let inputPosition = 0;
+
+
+        for (
+            let outputPosition = 0;
+            outputPosition < outputLength;
+            outputPosition++
+        ) {
+
+            const nextInputPosition =
+                Math.round(
+                    (
+                        outputPosition + 1
+                    ) * ratio
+                );
+
+
+            let total = 0;
+            let count = 0;
+
+
+            for (
+                let i = inputPosition;
+                i < nextInputPosition &&
+                i < input.length;
+                i++
+            ) {
+
+                total += input[i];
+                count++;
+            }
+
+
+            output[outputPosition] =
+                count > 0
+                    ? total / count
+                    : 0;
+
+
+            inputPosition =
+                nextInputPosition;
+        }
+
+
+        return output;
+    }
 </script>
 
 </body>
@@ -409,122 +932,246 @@ function downsampleTo16000(input, inputSampleRate) {
         return;
     }
 
+
     res.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8"
+        "Content-Type":
+            "text/html; charset=utf-8"
     });
+
 
     res.end(`
         <h1>RoomGuardian Cloud Relay</h1>
-        <p><a href="/watch">Open video with audio</a></p>
-        <p><a href="/live">Open video only</a></p>
+
+        <p>
+            <a href="/watch">
+                Open video with audio
+            </a>
+        </p>
+
+        <p>
+            <a href="/live">
+                Open video only
+            </a>
+        </p>
     `);
 });
 
-const wss = new WebSocket.Server({ server });
 
-wss.on("connection", (ws, req) => {
-
-    // Browser audio viewer
-    if (req.url === "/viewer") {
-        audioViewers.add(ws);
-        console.log("Audio viewer connected");
-
-        ws.on("close", () => {
-            audioViewers.delete(ws);
-            console.log("Audio viewer disconnected");
-        });
-
-        return;
-    }
-
-    // iPhone talkback microphone
-if (req.url === "/talk") {
-    console.log("Talkback viewer connected");
-
-    ws.on("message", data => {
-        if (!deviceSocket || deviceSocket.readyState !== WebSocket.OPEN) {
-            return;
-        }
-
-        const audioBytes = Buffer.from(data);
-
-        if (audioBytes.length === 0) {
-            return;
-        }
-
-        const packet = Buffer.alloc(audioBytes.length + 1);
-
-        packet[0] = 0x03;
-        audioBytes.copy(packet, 1);
-
-        deviceSocket.send(packet);
+const wss =
+    new WebSocket.Server({
+        server
     });
 
-    ws.on("close", () => {
-        console.log("Talkback viewer disconnected");
-    });
 
-    return;
-}
+wss.on(
+    "connection",
+    (ws, req) => {
 
-    // Samsung RoomGuardian device
-    console.log("Device connected");
 
-    deviceSocket = ws;
+        // Browser audio viewer
+        if (req.url === "/viewer") {
 
-    ws.on("message", data => {
-        const packet = Buffer.from(data);
+            audioViewers.add(ws);
 
-        if (packet.length < 2) {
+            console.log(
+                "Audio viewer connected"
+            );
+
+
+            ws.on("close", () => {
+
+                audioViewers.delete(ws);
+
+                console.log(
+                    "Audio viewer disconnected"
+                );
+            });
+
+
             return;
         }
 
-        const packetType = packet[0];
-        const payload = packet.subarray(1);
 
-        // Video
-        if (packetType === 0x01) {
-            latestFrame = payload;
-            frameCounter++;
+        // iPhone talkback microphone
+        if (req.url === "/talk") {
 
-            if (frameCounter % 30 === 0) {
-                console.log("Video frames received: " + frameCounter);
+            console.log(
+                "Talkback viewer connected"
+            );
+
+
+            ws.on("message", data => {
+
+                if (
+                    !deviceSocket ||
+                    deviceSocket.readyState !==
+                        WebSocket.OPEN
+                ) {
+
+                    return;
+                }
+
+
+                const audioBytes =
+                    Buffer.from(data);
+
+
+                if (
+                    audioBytes.length === 0
+                ) {
+
+                    return;
+                }
+
+
+                const packet =
+                    Buffer.alloc(
+                        audioBytes.length + 1
+                    );
+
+
+                packet[0] = 0x03;
+
+                audioBytes.copy(
+                    packet,
+                    1
+                );
+
+
+                deviceSocket.send(
+                    packet
+                );
+            });
+
+
+            ws.on("close", () => {
+
+                console.log(
+                    "Talkback viewer disconnected"
+                );
+            });
+
+
+            return;
+        }
+
+
+        // Samsung RoomGuardian device
+        console.log(
+            "Device connected"
+        );
+
+
+        deviceSocket = ws;
+
+
+        ws.on("message", data => {
+
+            const packet =
+                Buffer.from(data);
+
+
+            if (packet.length < 2) {
+                return;
             }
 
-            return;
-        }
 
-        // Audio
-        if (packetType === 0x02) {
-            audioPacketCounter++;
+            const packetType =
+                packet[0];
 
-            for (const viewer of audioViewers) {
-                if (viewer.readyState === WebSocket.OPEN) {
-                    viewer.send(payload);
+
+            const payload =
+                packet.subarray(1);
+
+
+            // Video packet
+            if (packetType === 0x01) {
+
+                latestFrame =
+                    payload;
+
+                frameCounter++;
+
+
+                if (
+                    frameCounter % 30 === 0
+                ) {
+
+                    console.log(
+                        "Video frames received: " +
+                        frameCounter
+                    );
+                }
+
+
+                return;
+            }
+
+
+            // Audio packet
+            if (packetType === 0x02) {
+
+                audioPacketCounter++;
+
+
+                for (
+                    const viewer
+                    of audioViewers
+                ) {
+
+                    if (
+                        viewer.readyState ===
+                        WebSocket.OPEN
+                    ) {
+
+                        viewer.send(
+                            payload
+                        );
+                    }
+                }
+
+
+                if (
+                    audioPacketCounter %
+                    50 === 0
+                ) {
+
+                    console.log(
+                        "Audio packets received: " +
+                        audioPacketCounter
+                    );
                 }
             }
+        });
 
-            if (audioPacketCounter % 50 === 0) {
-                console.log(
-                    "Audio packets received: " + audioPacketCounter
-                );
+
+        ws.on("close", () => {
+
+            if (deviceSocket === ws) {
+                deviceSocket = null;
             }
-        }
-    });
 
-    ws.on("close", () => {
-    if (deviceSocket === ws) {
-        deviceSocket = null;
+
+            console.log(
+                "Device disconnected"
+            );
+        });
     }
+);
 
-    console.log("Device disconnected");
-});
-});
 
-const PORT = process.env.PORT || 3000;
+const PORT =
+    process.env.PORT || 3000;
 
-server.listen(PORT, "0.0.0.0", () => {
-    console.log(
-        "RoomGuardian Cloud Relay running on port " + PORT
-    );
-});
+
+server.listen(
+    PORT,
+    "0.0.0.0",
+    () => {
+
+        console.log(
+            "RoomGuardian Cloud Relay running on port " +
+            PORT
+        );
+    }
+);
