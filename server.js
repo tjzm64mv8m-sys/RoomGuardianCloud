@@ -101,11 +101,14 @@ const server = http.createServer((req, res) => {
         }
 
         .video-container img {
-            display: block;
-            width: 100%;
-            height: auto;
-            background: black;
-        }
+    display: block;
+    width: auto;
+    height: 80vh;
+    max-width: 100%;
+    margin: 0 auto;
+    background: black;
+    transform: rotate(90deg);
+}
 
         .controls {
             padding: 18px 10px 8px;
