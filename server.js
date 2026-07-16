@@ -1,4 +1,129 @@
-const http = require("http");
+function stopTalk(event) {
+
+    if (event) {
+        event.preventDefault();
+    }
+
+    if (!talking) {
+        return;
+    }
+
+    talking = false;
+
+    talkButton.textContent =
+        "🎤 Hold to Talk";
+
+    talkButton.classList.remove(
+        "talking"
+    );
+
+    if (talkProcessor) {
+        try {
+            talkProcessor.disconnect();
+        } catch (ignored) {
+        }
+
+        talkProcessor.onaudioprocess = null;
+        talkProcessor = null;
+    }
+
+    if (talkStream) {
+        talkStream
+            .getTracks()
+            .forEach(track => track.stop());
+
+        talkStream = null;
+    }
+
+    let totalSamples = 0;
+
+    for (const chunk of talkChunks) {
+        totalSamples += chunk.length;
+    }
+
+    const completeRecording =
+        new Int16Array(totalSamples);
+
+    let position = 0;
+
+    for (const chunk of talkChunks) {
+        completeRecording.set(
+            chunk,
+            position
+        );
+
+        position += chunk.length;
+    }
+
+    talkChunks = [];
+
+    const recordingDurationMs =
+        Math.ceil(
+            totalSamples / 16000 * 1000
+        );
+
+    const sendRecording = () => {
+
+        if (
+            talkSocket &&
+            talkSocket.readyState ===
+                WebSocket.OPEN &&
+            completeRecording.length > 0
+        ) {
+            talkSocket.send(
+                completeRecording.buffer
+            );
+        }
+
+        setTimeout(() => {
+
+            if (talkSocket) {
+                try {
+                    talkSocket.close();
+                } catch (ignored) {
+                }
+
+                talkSocket = null;
+            }
+
+            if (talkAudioContext) {
+                try {
+                    talkAudioContext.close();
+                } catch (ignored) {
+                }
+
+                talkAudioContext = null;
+            }
+
+        }, recordingDurationMs + 500);
+    };
+
+    if (
+        talkSocket &&
+        talkSocket.readyState ===
+            WebSocket.OPEN
+    ) {
+        sendRecording();
+
+    } else if (
+        talkSocket &&
+        talkSocket.readyState ===
+            WebSocket.CONNECTING
+    ) {
+        talkSocket.onopen =
+            sendRecording;
+
+    } else {
+        if (talkAudioContext) {
+            try {
+                talkAudioContext.close();
+            } catch (ignored) {
+            }
+
+            talkAudioContext = null;
+        }
+    }
+}const http = require("http");
 const WebSocket = require("ws");
 
 let latestFrame = null;
