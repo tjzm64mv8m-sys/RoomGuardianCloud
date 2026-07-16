@@ -737,20 +737,11 @@ talkButton.addEventListener(
                 };
 
 
-            microphoneSource.connect(
+           microphoneSource.connect(
     talkProcessor
 );
 
-const silentGain =
-    talkAudioContext.createGain();
-
-silentGain.gain.value = 0;
-
 talkProcessor.connect(
-    silentGain
-);
-
-silentGain.connect(
     talkAudioContext.destination
 );
 
