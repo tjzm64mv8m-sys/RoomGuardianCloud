@@ -12,20 +12,33 @@ let deviceSocket = null;
 let webRtcBrowserSocket = null;
 let webRtcDeviceSocket = null;
 
+/*
+ * null  = camera state not received yet
+ * true  = front camera
+ * false = back camera
+ */
+let lastCameraIsFront = null;
+
 const server = http.createServer((req, res) => {
 
     // =========================
     // MJPEG VIDEO STREAM
     // =========================
 
-    if (req.method === "GET" && req.url === "/live") {
+    if (
+        req.method === "GET"
+        &&
+        req.url.startsWith("/live")
+    ) {
 
         res.writeHead(200, {
             "Content-Type":
                 "multipart/x-mixed-replace; boundary=frame",
-            "Cache-Control": "no-cache",
+            "Cache-Control":
+                "no-cache, no-store, must-revalidate",
             "Connection": "close",
-            "Pragma": "no-cache"
+            "Pragma": "no-cache",
+            "Expires": "0"
         });
 
         const interval = setInterval(() => {
@@ -60,12 +73,21 @@ const server = http.createServer((req, res) => {
     // WATCH PAGE
     // =========================
 
-    if (req.method === "GET" && req.url === "/watch") {
+    if (
+        req.method === "GET"
+        &&
+        req.url.startsWith("/watch")
+    ) {
 
         res.writeHead(200, {
             "Content-Type":
                 "text/html; charset=utf-8",
-            "Cache-Control": "no-cache"
+
+            "Cache-Control":
+                "no-cache, no-store, must-revalidate",
+
+            "Pragma": "no-cache",
+            "Expires": "0"
         });
 
         res.end(`
@@ -168,18 +190,25 @@ const server = http.createServer((req, res) => {
 
             object-fit: contain;
 
-            transform:
-                rotate(90deg);
+            /*
+             * Back-camera orientation.
+             * JavaScript changes this to 270deg
+             * only after Samsung confirms front camera.
+             */
+            transform: rotate(90deg);
 
-            transform-origin:
-                center;
+            transform-origin: center;
 
             background: black;
 
-            .video-container img.front-camera {
-    transform:
-        rotate(270deg);
-}
+            opacity: 1;
+
+            transition:
+                opacity 0.15s ease;
+        }
+
+        .video-container img.switching {
+            opacity: 0;
         }
 
         .controls {
@@ -246,6 +275,18 @@ const server = http.createServer((req, res) => {
         #audioOffButton {
             background: #3b3b3b;
             color: white;
+        }
+
+        #switchCameraButton {
+            margin-bottom: 10px;
+
+            background: #2d6cdf;
+            color: white;
+        }
+
+        #switchCameraButton:disabled {
+            opacity: 0.55;
+            cursor: default;
         }
 
         #talkButton {
@@ -328,7 +369,8 @@ const server = http.createServer((req, res) => {
     <div class="video-container">
 
         <img
-            src="/live"
+            id="liveImage"
+            src="/live?stream=1"
             alt="RoomGuardian live video"
         >
 
@@ -349,15 +391,15 @@ const server = http.createServer((req, res) => {
         </div>
 
         <button id="switchCameraButton">
-    🔄 Switch Camera
-</button>
+            🔄 Switch Camera
+        </button>
 
         <button id="talkButton">
             🎤 Hold to Talk
         </button>
 
         <div id="status">
-            Audio is off
+            Connecting camera control...
         </div>
 
     </div>
@@ -377,15 +419,15 @@ const server = http.createServer((req, res) => {
             "audioOffButton"
         );
 
-        const switchCameraButton =
-    document.getElementById(
-        "switchCameraButton"
-    );
+    const switchCameraButton =
+        document.getElementById(
+            "switchCameraButton"
+        );
 
     const liveImage =
-    document.querySelector(
-        ".video-container img"
-    );
+        document.getElementById(
+            "liveImage"
+        );
 
     const talkButton =
         document.getElementById(
@@ -404,98 +446,206 @@ const server = http.createServer((req, res) => {
 
 
     let rtcSocket = null;
-let rtcPeerConnection = null;
-let rtcStream = null;
-let rtcMicrophoneTrack = null;
-let rtcReady = false;
-let talking = false;
+    let rtcPeerConnection = null;
+    let rtcStream = null;
+    let rtcMicrophoneTrack = null;
+    let rtcReady = false;
+    let talking = false;
 
-let cameraControlSocket = null;
+    let pendingRemoteIceCandidates = [];
 
-let frontCameraSelected = false;
+    let cameraControlSocket = null;
+    let cameraSwitchPending = false;
 
-let pendingRemoteIceCandidates = [];
 
-// =========================
-// CAMERA CONTROL
-// =========================
+    // =========================
+    // CAMERA CONTROL
+    // =========================
 
-switchCameraButton.addEventListener(
-    "click",
-    () => {
+    function applyCameraState(
+        isFrontCamera
+    ) {
+
+        /*
+         * Back camera = 90 degrees
+         * Front camera = 270 degrees
+         *
+         * The browser does not guess.
+         * This runs only after Samsung confirms
+         * the selected camera.
+         */
+
+        liveImage.style.transform =
+            isFrontCamera
+                ? "rotate(270deg)"
+                : "rotate(90deg)";
+
+        liveImage.classList.remove(
+            "switching"
+        );
+
+        switchCameraButton.disabled =
+            false;
+
+        cameraSwitchPending =
+            false;
+
+        status.textContent =
+            isFrontCamera
+                ? "📷 Front camera selected"
+                : "📷 Back camera selected";
+    }
+
+
+    function connectCameraControl() {
+
+        if (
+            cameraControlSocket
+            &&
+            (
+                cameraControlSocket.readyState
+                    === WebSocket.OPEN
+                ||
+                cameraControlSocket.readyState
+                    === WebSocket.CONNECTING
+            )
+        ) {
+            return;
+        }
 
         const protocol =
-            window.location.protocol ===
-            "https:"
-                ? "wss:"
-                : "ws:";
+            window.location.protocol
+                === "https:"
+                    ? "wss:"
+                    : "ws:";
 
-        const sendSwitchCommand = () => {
+        cameraControlSocket =
+            new WebSocket(
+                protocol
+                + "//"
+                + window.location.host
+                + "/camera-control"
+            );
+
+        cameraControlSocket.onopen =
+            () => {
+
+                status.textContent =
+                    "✅ Camera control connected";
+            };
+
+        cameraControlSocket.onmessage =
+            event => {
+
+                const message =
+                    event.data;
+
+                if (
+                    message
+                    === "front-camera-active"
+                ) {
+
+                    applyCameraState(
+                        true
+                    );
+
+                    return;
+                }
+
+                if (
+                    message
+                    === "back-camera-active"
+                ) {
+
+                    applyCameraState(
+                        false
+                    );
+                }
+            };
+
+        cameraControlSocket.onerror =
+            () => {
+
+                liveImage.classList.remove(
+                    "switching"
+                );
+
+                switchCameraButton.disabled =
+                    false;
+
+                cameraSwitchPending =
+                    false;
+
+                status.textContent =
+                    "❌ Camera control error";
+            };
+
+        cameraControlSocket.onclose =
+            () => {
+
+                cameraControlSocket =
+                    null;
+
+                liveImage.classList.remove(
+                    "switching"
+                );
+
+                switchCameraButton.disabled =
+                    false;
+
+                cameraSwitchPending =
+                    false;
+
+                status.textContent =
+                    "❌ Camera control disconnected";
+            };
+    }
+
+
+    switchCameraButton.addEventListener(
+        "click",
+        () => {
+
+            if (cameraSwitchPending) {
+                return;
+            }
+
+            if (
+                !cameraControlSocket
+                ||
+                cameraControlSocket.readyState
+                    !== WebSocket.OPEN
+            ) {
+
+                status.textContent =
+                    "❌ Camera control not connected";
+
+                connectCameraControl();
+
+                return;
+            }
+
+            cameraSwitchPending =
+                true;
+
+            switchCameraButton.disabled =
+                true;
+
+            liveImage.classList.add(
+                "switching"
+            );
+
+            status.textContent =
+                "🔄 Switching camera...";
 
             cameraControlSocket.send(
                 "switch-camera"
             );
-
-            liveImage.style.visibility =
-    "hidden";
-
-setTimeout(
-    () => {
-
-        liveImage.style.transform =
-            frontCameraSelected
-                ? "rotate(270deg)"
-                : "rotate(90deg)";
-
-        liveImage.style.visibility =
-            "visible";
-
-        status.textContent =
-            frontCameraSelected
-                ? "📷 Front camera selected"
-                : "📷 Back camera selected";
-
-    },
-    1800
-);
-
-            status.textContent =
-                frontCameraSelected
-                    ? "📷 Front camera selected"
-                    : "📷 Back camera selected";
-        };
-
-        if (
-            !cameraControlSocket
-            ||
-            cameraControlSocket.readyState !==
-                WebSocket.OPEN
-        ) {
-
-            cameraControlSocket =
-                new WebSocket(
-                    protocol
-                    + "//"
-                    + window.location.host
-                    + "/camera-control"
-                );
-
-            cameraControlSocket.onopen =
-                sendSwitchCommand;
-
-            cameraControlSocket.onerror =
-                () => {
-
-                    status.textContent =
-                        "❌ Camera control error";
-                };
-
-            return;
         }
+    );
 
-        sendSwitchCommand();
-    }
-);
+
+    connectCameraControl();
 
 
     // =========================
@@ -537,7 +687,6 @@ setTimeout(
             new AudioContextClass();
 
 
-        // Unlock Safari audio.
         const unlockBuffer =
             audioContext.createBuffer(
                 1,
@@ -569,9 +718,9 @@ setTimeout(
 
         const protocol =
             window.location.protocol
-            === "https:"
-                ? "wss:"
-                : "ws:";
+                === "https:"
+                    ? "wss:"
+                    : "ws:";
 
 
         audioSocket =
@@ -587,39 +736,43 @@ setTimeout(
             "arraybuffer";
 
 
-        audioSocket.onopen = () => {
-
-            status.textContent =
-                "✅ Audio connected";
-
-            audioOnButton.textContent =
-                "✅ Audio Enabled";
-        };
-
-
-        audioSocket.onerror = () => {
-
-            status.textContent =
-                "❌ Audio connection error";
-        };
-
-
-        audioSocket.onclose = () => {
-
-            if (audioContext) {
+        audioSocket.onopen =
+            () => {
 
                 status.textContent =
-                    "❌ Audio disconnected";
-            }
-        };
+                    "✅ Audio connected";
+
+                audioOnButton.textContent =
+                    "✅ Audio Enabled";
+            };
 
 
-        audioSocket.onmessage = event => {
+        audioSocket.onerror =
+            () => {
 
-            playPcmAudio(
-                event.data
-            );
-        };
+                status.textContent =
+                    "❌ Audio connection error";
+            };
+
+
+        audioSocket.onclose =
+            () => {
+
+                if (audioContext) {
+
+                    status.textContent =
+                        "❌ Audio disconnected";
+                }
+            };
+
+
+        audioSocket.onmessage =
+            event => {
+
+                playPcmAudio(
+                    event.data
+                );
+            };
     }
 
 
@@ -632,7 +785,8 @@ setTimeout(
 
         if (audioSocket) {
 
-            audioSocket.onclose = null;
+            audioSocket.onclose =
+                null;
 
             try {
                 audioSocket.close();
@@ -640,7 +794,8 @@ setTimeout(
             } catch (ignored) {
             }
 
-            audioSocket = null;
+            audioSocket =
+                null;
         }
 
 
@@ -652,11 +807,13 @@ setTimeout(
             } catch (ignored) {
             }
 
-            audioContext = null;
+            audioContext =
+                null;
         }
 
 
-        nextPlayTime = 0;
+        nextPlayTime =
+            0;
 
 
         audioOnButton.textContent =
@@ -743,7 +900,8 @@ setTimeout(
             nextPlayTime - now > 0.25
         ) {
 
-            nextPlayTime = now;
+            nextPlayTime =
+                now;
         }
 
 
@@ -756,19 +914,23 @@ setTimeout(
             audioBuffer.duration;
     }
 
-        // =========================
+
+    // =========================
     // WEBRTC TALKBACK
     // =========================
 
     talkButton.addEventListener(
         "pointerdown",
         event => {
+
             event.preventDefault();
 
             try {
+
                 talkButton.setPointerCapture(
                     event.pointerId
                 );
+
             } catch (ignored) {
             }
 
@@ -798,7 +960,8 @@ setTimeout(
             return;
         }
 
-        talking = true;
+        talking =
+            true;
 
         talkButton.textContent =
             "🔴 Connecting...";
@@ -812,7 +975,9 @@ setTimeout(
             await ensureWebRtcTalkback();
 
             if (rtcMicrophoneTrack) {
-                rtcMicrophoneTrack.enabled = true;
+
+                rtcMicrophoneTrack.enabled =
+                    true;
             }
 
             talkButton.textContent =
@@ -823,7 +988,8 @@ setTimeout(
 
         } catch (error) {
 
-            talking = false;
+            talking =
+                false;
 
             talkButton.textContent =
                 "🎤 Hold to Talk";
@@ -845,10 +1011,13 @@ setTimeout(
             event.preventDefault();
         }
 
-        talking = false;
+        talking =
+            false;
 
         if (rtcMicrophoneTrack) {
-            rtcMicrophoneTrack.enabled = false;
+
+            rtcMicrophoneTrack.enabled =
+                false;
         }
 
         talkButton.textContent =
@@ -859,6 +1028,7 @@ setTimeout(
         );
 
         if (rtcReady) {
+
             status.textContent =
                 "✅ WebRTC ready";
         }
@@ -868,7 +1038,8 @@ setTimeout(
     async function ensureWebRtcTalkback() {
 
         if (
-            rtcPeerConnection &&
+            rtcPeerConnection
+            &&
             rtcReady
         ) {
             return;
@@ -915,10 +1086,12 @@ setTimeout(
             event => {
 
                 if (
-                    !event.candidate ||
-                    !rtcSocket ||
-                    rtcSocket.readyState !==
-                        WebSocket.OPEN
+                    !event.candidate
+                    ||
+                    !rtcSocket
+                    ||
+                    rtcSocket.readyState
+                        !== WebSocket.OPEN
                 ) {
                     return;
                 }
@@ -926,11 +1099,14 @@ setTimeout(
                 rtcSocket.send(
                     JSON.stringify({
                         type: "ice",
+
                         sdpMid:
                             event.candidate.sdpMid,
+
                         sdpMLineIndex:
                             event.candidate
                                 .sdpMLineIndex,
+
                         candidate:
                             event.candidate.candidate
                     })
@@ -945,9 +1121,12 @@ setTimeout(
                     rtcPeerConnection
                         .connectionState;
 
-                if (state === "connected") {
+                if (
+                    state === "connected"
+                ) {
 
-                    rtcReady = true;
+                    rtcReady =
+                        true;
 
                     status.textContent =
                         talking
@@ -958,12 +1137,15 @@ setTimeout(
                 }
 
                 if (
-                    state === "failed" ||
-                    state === "disconnected" ||
+                    state === "failed"
+                    ||
+                    state === "disconnected"
+                    ||
                     state === "closed"
                 ) {
 
-                    rtcReady = false;
+                    rtcReady =
+                        false;
 
                     status.textContent =
                         "❌ WebRTC "
@@ -971,11 +1153,13 @@ setTimeout(
                 }
             };
 
+
         const protocol =
-            window.location.protocol ===
-            "https:"
-                ? "wss:"
-                : "ws:";
+            window.location.protocol
+                === "https:"
+                    ? "wss:"
+                    : "ws:";
+
 
         rtcSocket =
             new WebSocket(
@@ -984,6 +1168,7 @@ setTimeout(
                 + window.location.host
                 + "/webrtc-browser"
             );
+
 
         await new Promise(
             (resolve, reject) => {
@@ -1000,6 +1185,7 @@ setTimeout(
             }
         );
 
+
         rtcSocket.onmessage =
             async event => {
 
@@ -1011,8 +1197,8 @@ setTimeout(
                         );
 
                     if (
-                        message.type ===
-                        "answer"
+                        message.type
+                        === "answer"
                     ) {
 
                         await rtcPeerConnection
@@ -1025,6 +1211,7 @@ setTimeout(
                             const candidate
                             of pendingRemoteIceCandidates
                         ) {
+
                             await rtcPeerConnection
                                 .addIceCandidate(
                                     candidate
@@ -1038,17 +1225,19 @@ setTimeout(
                     }
 
                     if (
-                        message.type ===
-                        "ice"
+                        message.type
+                        === "ice"
                     ) {
 
                         const candidate =
                             new RTCIceCandidate({
                                 sdpMid:
                                     message.sdpMid,
+
                                 sdpMLineIndex:
                                     message
                                         .sdpMLineIndex,
+
                                 candidate:
                                     message.candidate
                             });
@@ -1080,6 +1269,7 @@ setTimeout(
                 }
             };
 
+
         const offer =
             await rtcPeerConnection
                 .createOffer({
@@ -1087,10 +1277,12 @@ setTimeout(
                         false
                 });
 
+
         await rtcPeerConnection
             .setLocalDescription(
                 offer
             );
+
 
         rtcSocket.send(
             JSON.stringify({
@@ -1119,7 +1311,6 @@ setTimeout(
         "Content-Type":
             "text/html; charset=utf-8"
     });
-
 
     res.end(`
         <h1>RoomGuardian Cloud Relay</h1>
@@ -1154,19 +1345,21 @@ wss.on(
     (ws, req) => {
 
 
-        // WebRTC browser signalling
+        // =========================
+        // WEBRTC BROWSER
+        // =========================
+
         if (
             req.url
             === "/webrtc-browser"
         ) {
 
-            webRtcBrowserSocket = ws;
-
+            webRtcBrowserSocket =
+                ws;
 
             console.log(
                 "WebRTC browser connected"
             );
-
 
             ws.on(
                 "message",
@@ -1186,7 +1379,6 @@ wss.on(
                 }
             );
 
-
             ws.on(
                 "close",
                 () => {
@@ -1200,31 +1392,31 @@ wss.on(
                             null;
                     }
 
-
                     console.log(
                         "WebRTC browser disconnected"
                     );
                 }
             );
 
-
             return;
         }
 
 
-        // WebRTC Samsung signalling
+        // =========================
+        // WEBRTC SAMSUNG
+        // =========================
+
         if (
             req.url
             === "/webrtc-device"
         ) {
 
-            webRtcDeviceSocket = ws;
-
+            webRtcDeviceSocket =
+                ws;
 
             console.log(
                 "WebRTC device connected"
             );
-
 
             ws.on(
                 "message",
@@ -1244,7 +1436,6 @@ wss.on(
                 }
             );
 
-
             ws.on(
                 "close",
                 () => {
@@ -1258,38 +1449,40 @@ wss.on(
                             null;
                     }
 
-
                     console.log(
                         "WebRTC device disconnected"
                     );
                 }
             );
 
-
             return;
         }
 
 
-        // Browser room-audio viewer
+        // =========================
+        // ROOM AUDIO VIEWER
+        // =========================
+
         if (
             req.url
             === "/viewer"
         ) {
 
-            audioViewers.add(ws);
-
+            audioViewers.add(
+                ws
+            );
 
             console.log(
                 "Audio viewer connected"
             );
 
-
             ws.on(
                 "close",
                 () => {
 
-                    audioViewers.delete(ws);
-
+                    audioViewers.delete(
+                        ws
+                    );
 
                     console.log(
                         "Audio viewer disconnected"
@@ -1297,12 +1490,14 @@ wss.on(
                 }
             );
 
-
             return;
         }
 
 
-        // iPhone talkback
+        // =========================
+        // OLD PCM TALKBACK
+        // =========================
+
         if (
             req.url
             === "/talk"
@@ -1312,9 +1507,6 @@ wss.on(
                 "Talkback viewer connected"
             );
 
-
-            // Tell Samsung:
-            // talkback started
             if (
                 deviceSocket
                 &&
@@ -1328,7 +1520,6 @@ wss.on(
                     ])
                 );
             }
-
 
             ws.on(
                 "message",
@@ -1344,18 +1535,18 @@ wss.on(
                         return;
                     }
 
-
                     const audioBytes =
-                        Buffer.from(data);
-
+                        Buffer.from(
+                            data
+                        );
 
                     if (
-                        audioBytes.length === 0
+                        audioBytes.length
+                        === 0
                     ) {
 
                         return;
                     }
-
 
                     const packet =
                         Buffer.alloc(
@@ -1364,16 +1555,13 @@ wss.on(
                             1
                         );
 
-
                     packet[0] =
                         0x03;
-
 
                     audioBytes.copy(
                         packet,
                         1
                     );
-
 
                     deviceSocket.send(
                         packet
@@ -1381,13 +1569,10 @@ wss.on(
                 }
             );
 
-
             ws.on(
                 "close",
                 () => {
 
-                    // Tell Samsung:
-                    // talkback stopped
                     if (
                         deviceSocket
                         &&
@@ -1402,83 +1587,119 @@ wss.on(
                         );
                     }
 
-
                     console.log(
                         "Talkback viewer disconnected"
                     );
                 }
             );
 
+            return;
+        }
+
+
+        // =========================
+        // CAMERA CONTROL BROWSER
+        // =========================
+
+        if (
+            req.url
+            === "/camera-control"
+        ) {
+
+            cameraControlViewers.add(
+                ws
+            );
+
+            console.log(
+                "Camera-control browser connected"
+            );
+
+            /*
+             * Tell a newly opened webpage the
+             * last camera state already confirmed
+             * by Samsung.
+             */
+            if (
+                lastCameraIsFront
+                !== null
+            ) {
+
+                ws.send(
+                    lastCameraIsFront
+                        ? "front-camera-active"
+                        : "back-camera-active"
+                );
+            }
+
+            ws.on(
+                "message",
+                message => {
+
+                    const command =
+                        message.toString();
+
+                    if (
+                        command
+                        !== "switch-camera"
+                    ) {
+
+                        return;
+                    }
+
+                    if (
+                        !deviceSocket
+                        ||
+                        deviceSocket.readyState
+                            !== WebSocket.OPEN
+                    ) {
+
+                        ws.send(
+                            "camera-device-not-connected"
+                        );
+
+                        return;
+                    }
+
+                    /*
+                     * 0x06 tells Samsung to
+                     * switch cameras.
+                     */
+                    deviceSocket.send(
+                        Buffer.from([
+                            0x06
+                        ])
+                    );
+                }
+            );
+
+            ws.on(
+                "close",
+                () => {
+
+                    cameraControlViewers.delete(
+                        ws
+                    );
+
+                    console.log(
+                        "Camera-control browser disconnected"
+                    );
+                }
+            );
 
             return;
         }
 
-        // Browser camera-control socket
-if (
-    req.url
-    === "/camera-control"
-) {
 
-    console.log(
-        "Camera-control browser connected"
-        
-    );
+        // =========================
+        // MAIN SAMSUNG STREAM
+        // =========================
 
-    cameraControlViewers.add(ws);
-
-    ws.on(
-        "message",
-        message => {
-
-            cameraControlViewers.delete(ws);
-
-            const command =
-                message.toString();
-
-            if (
-                command !==
-                "switch-camera"
-            ) {
-                return;
-            }
-
-            if (
-                deviceSocket
-                &&
-                deviceSocket.readyState
-                    === WebSocket.OPEN
-            ) {
-
-                deviceSocket.send(
-                    Buffer.from([
-                        0x06
-                    ])
-                );
-            }
-        }
-    );
-
-    ws.on(
-        "close",
-        () => {
-
-            console.log(
-                "Camera-control browser disconnected"
-            );
-        }
-    );
-
-    return;
-}
-
-
-        // Main Samsung stream socket
         console.log(
             "Device connected"
         );
 
-
-        deviceSocket = ws;
+        deviceSocket =
+            ws;
 
 
         ws.on(
@@ -1486,26 +1707,31 @@ if (
             data => {
 
                 const packet =
-                    Buffer.from(data);
-
+                    Buffer.from(
+                        data
+                    );
 
                 if (
-                    packet.length < 2
+                    packet.length
+                    < 1
                 ) {
 
                     return;
                 }
 
-
                 const packetType =
                     packet[0];
 
-
                 const payload =
-                    packet.subarray(1);
+                    packet.subarray(
+                        1
+                    );
 
 
-                // Video packet
+                // =====================
+                // VIDEO FRAME
+                // =====================
+
                 if (
                     packetType
                     === 0x01
@@ -1514,9 +1740,7 @@ if (
                     latestFrame =
                         payload;
 
-
                     frameCounter++;
-
 
                     if (
                         frameCounter
@@ -1532,51 +1756,20 @@ if (
                         );
                     }
 
-
                     return;
                 }
 
-                // Camera state packet
-if (
-    packetType
-    === 0x07
-) {
 
-    const isFrontCamera =
-        payload.length > 0
-        &&
-        payload[0] === 0x01;
+                // =====================
+                // ROOM AUDIO
+                // =====================
 
-    for (
-        const viewer
-        of cameraControlViewers
-    ) {
-
-        if (
-            viewer.readyState
-            === WebSocket.OPEN
-        ) {
-
-            viewer.send(
-                isFrontCamera
-                    ? "front-camera-active"
-                    : "back-camera-active"
-            );
-        }
-    }
-
-    return;
-}
-
-
-                // Room audio packet
                 if (
                     packetType
                     === 0x02
                 ) {
 
                     audioPacketCounter++;
-
 
                     for (
                         const viewer
@@ -1594,7 +1787,6 @@ if (
                         }
                     }
 
-
                     if (
                         audioPacketCounter
                         %
@@ -1608,6 +1800,60 @@ if (
                             audioPacketCounter
                         );
                     }
+
+                    return;
+                }
+
+
+                // =====================
+                // CAMERA STATE
+                // =====================
+
+                if (
+                    packetType
+                    === 0x07
+                ) {
+
+                    if (
+                        payload.length
+                        < 1
+                    ) {
+
+                        return;
+                    }
+
+                    lastCameraIsFront =
+                        payload[0]
+                        === 0x01;
+
+                    const cameraMessage =
+                        lastCameraIsFront
+                            ? "front-camera-active"
+                            : "back-camera-active";
+
+                    console.log(
+                        lastCameraIsFront
+                            ? "Front camera confirmed"
+                            : "Back camera confirmed"
+                    );
+
+                    for (
+                        const viewer
+                        of cameraControlViewers
+                    ) {
+
+                        if (
+                            viewer.readyState
+                            === WebSocket.OPEN
+                        ) {
+
+                            viewer.send(
+                                cameraMessage
+                            );
+                        }
+                    }
+
+                    return;
                 }
             }
         );
@@ -1625,7 +1871,6 @@ if (
                     deviceSocket =
                         null;
                 }
-
 
                 console.log(
                     "Device disconnected"
