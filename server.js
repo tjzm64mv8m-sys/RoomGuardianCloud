@@ -438,10 +438,17 @@ switchCameraButton.addEventListener(
             frontCameraSelected =
                 !frontCameraSelected;
 
-            liveImage.style.transform =
-    frontCameraSelected
-        ? "rotate(270deg)"
-        : "rotate(90deg)";
+            setTimeout(
+    () => {
+
+        liveImage.style.transform =
+            frontCameraSelected
+                ? "rotate(270deg)"
+                : "rotate(90deg)";
+
+    },
+    1800
+);
 
             status.textContent =
                 frontCameraSelected
