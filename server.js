@@ -441,8 +441,14 @@ const server = http.createServer((req, res) => {
 
 
     let audioContext = null;
-    let audioSocket = null;
-    let nextPlayTime = 0;
+let audioSocket = null;
+
+let nextPlayTime = 0;
+let audioStarted = false;
+let audioConnectionNumber = 0;
+
+const AUDIO_SAMPLE_RATE = 16000;
+const AUDIO_START_BUFFER_SECONDS = 0.12;
 
 
     let rtcSocket = null;
@@ -648,271 +654,357 @@ const server = http.createServer((req, res) => {
     connectCameraControl();
 
 
-    // =========================
-    // ROOM AUDIO
-    // =========================
+   // =========================
+// ROOM AUDIO
+// =========================
 
-    audioOnButton.addEventListener(
-        "click",
-        startAudio
-    );
+audioOnButton.addEventListener(
+    "click",
+    startAudio
+);
 
-    audioOffButton.addEventListener(
-        "click",
-        stopAudio
-    );
-
-
-    async function startAudio(event) {
-
-        if (event) {
-            event.preventDefault();
-        }
-
-        if (audioContext) {
-
-            await audioContext.resume();
-
-            return;
-        }
+audioOffButton.addEventListener(
+    "click",
+    stopAudio
+);
 
 
-        const AudioContextClass =
-            window.AudioContext
-            ||
-            window.webkitAudioContext;
+async function startAudio(event) {
 
+    if (event) {
+        event.preventDefault();
+    }
+
+    /*
+     * Close any old or broken connection first.
+     * This prevents two audio streams playing together.
+     */
+    closeAudioConnection();
+
+    const AudioContextClass =
+        window.AudioContext
+        ||
+        window.webkitAudioContext;
+
+    try {
+
+        audioContext =
+            new AudioContextClass({
+                sampleRate:
+                    AUDIO_SAMPLE_RATE
+            });
+
+    } catch (ignored) {
 
         audioContext =
             new AudioContextClass();
-
-
-        const unlockBuffer =
-            audioContext.createBuffer(
-                1,
-                1,
-                16000
-            );
-
-        const unlockSource =
-            audioContext
-                .createBufferSource();
-
-
-        unlockSource.buffer =
-            unlockBuffer;
-
-        unlockSource.connect(
-            audioContext.destination
-        );
-
-        unlockSource.start(0);
-
-
-        await audioContext.resume();
-
-
-        nextPlayTime =
-            audioContext.currentTime;
-
-
-        const protocol =
-            window.location.protocol
-                === "https:"
-                    ? "wss:"
-                    : "ws:";
-
-
-        audioSocket =
-            new WebSocket(
-                protocol
-                + "//"
-                + window.location.host
-                + "/viewer"
-            );
-
-
-        audioSocket.binaryType =
-            "arraybuffer";
-
-
-        audioSocket.onopen =
-            () => {
-
-                status.textContent =
-                    "✅ Audio connected";
-
-                audioOnButton.textContent =
-                    "✅ Audio Enabled";
-            };
-
-
-        audioSocket.onerror =
-            () => {
-
-                status.textContent =
-                    "❌ Audio connection error";
-            };
-
-
-        audioSocket.onclose =
-            () => {
-
-                if (audioContext) {
-
-                    status.textContent =
-                        "❌ Audio disconnected";
-                }
-            };
-
-
-        audioSocket.onmessage =
-            event => {
-
-                playPcmAudio(
-                    event.data
-                );
-            };
     }
 
 
-    function stopAudio(event) {
+    /*
+     * Unlock audio playback on iPhone Safari.
+     */
+    const unlockBuffer =
+        audioContext.createBuffer(
+            1,
+            1,
+            AUDIO_SAMPLE_RATE
+        );
 
-        if (event) {
-            event.preventDefault();
-        }
+    const unlockSource =
+        audioContext.createBufferSource();
+
+    unlockSource.buffer =
+        unlockBuffer;
+
+    unlockSource.connect(
+        audioContext.destination
+    );
+
+    unlockSource.start(0);
+
+    await audioContext.resume();
 
 
-        if (audioSocket) {
+    nextPlayTime = 0;
+    audioStarted = false;
 
-            audioSocket.onclose =
-                null;
+    audioConnectionNumber++;
 
-            try {
-                audioSocket.close();
+    const thisConnection =
+        audioConnectionNumber;
 
-            } catch (ignored) {
+
+    const protocol =
+        window.location.protocol
+        === "https:"
+            ? "wss:"
+            : "ws:";
+
+
+    audioSocket =
+        new WebSocket(
+            protocol
+            + "//"
+            + window.location.host
+            + "/viewer"
+        );
+
+
+    audioSocket.binaryType =
+        "arraybuffer";
+
+
+    audioSocket.onopen =
+        () => {
+
+            if (
+                thisConnection
+                !== audioConnectionNumber
+            ) {
+                return;
             }
 
-            audioSocket =
-                null;
-        }
+            status.textContent =
+                "✅ Audio connected";
+
+            audioOnButton.textContent =
+                "✅ Audio Enabled";
+        };
 
 
-        if (audioContext) {
+    audioSocket.onmessage =
+        event => {
 
-            try {
-                audioContext.close();
-
-            } catch (ignored) {
+            if (
+                thisConnection
+                !== audioConnectionNumber
+            ) {
+                return;
             }
 
-            audioContext =
-                null;
+            playPcmAudio(
+                event.data
+            );
+        };
+
+
+    audioSocket.onerror =
+        () => {
+
+            if (
+                thisConnection
+                !== audioConnectionNumber
+            ) {
+                return;
+            }
+
+            status.textContent =
+                "❌ Audio connection error";
+        };
+
+
+    audioSocket.onclose =
+        () => {
+
+            if (
+                thisConnection
+                !== audioConnectionNumber
+            ) {
+                return;
+            }
+
+            if (audioContext) {
+
+                status.textContent =
+                    "❌ Audio disconnected";
+            }
+        };
+}
+
+
+function stopAudio(event) {
+
+    if (event) {
+        event.preventDefault();
+    }
+
+    closeAudioConnection();
+
+    audioOnButton.textContent =
+        "🔊 Enable Audio";
+
+    status.textContent =
+        "Audio is off";
+}
+
+
+function closeAudioConnection() {
+
+    audioConnectionNumber++;
+
+    if (audioSocket) {
+
+        audioSocket.onopen = null;
+        audioSocket.onmessage = null;
+        audioSocket.onerror = null;
+        audioSocket.onclose = null;
+
+        try {
+            audioSocket.close();
+        } catch (ignored) {
         }
 
+        audioSocket = null;
+    }
+
+
+    if (audioContext) {
+
+        try {
+            audioContext.close();
+        } catch (ignored) {
+        }
+
+        audioContext = null;
+    }
+
+
+    nextPlayTime = 0;
+    audioStarted = false;
+}
+
+
+function playPcmAudio(arrayBuffer) {
+
+    if (
+        !audioContext
+        ||
+        audioContext.state === "closed"
+    ) {
+        return;
+    }
+
+
+    const view =
+        new DataView(
+            arrayBuffer
+        );
+
+
+    const sampleCount =
+        Math.floor(
+            view.byteLength / 2
+        );
+
+
+    if (sampleCount <= 0) {
+        return;
+    }
+
+
+    const audioBuffer =
+        audioContext.createBuffer(
+            1,
+            sampleCount,
+            AUDIO_SAMPLE_RATE
+        );
+
+
+    const channel =
+        audioBuffer.getChannelData(0);
+
+
+    for (
+        let i = 0;
+        i < sampleCount;
+        i++
+    ) {
+
+        channel[i] =
+            view.getInt16(
+                i * 2,
+                true
+            )
+            /
+            32768;
+    }
+
+
+    const now =
+        audioContext.currentTime;
+
+
+    /*
+     * Start with a small buffer.
+     * This absorbs normal internet jitter and prevents
+     * broken, robotic or rapidly repeating audio.
+     */
+    if (!audioStarted) {
 
         nextPlayTime =
-            0;
+            now
+            +
+            AUDIO_START_BUFFER_SECONDS;
 
-
-        audioOnButton.textContent =
-            "🔊 Enable Audio";
-
-        status.textContent =
-            "Audio is off";
+        audioStarted =
+            true;
     }
 
 
-    function playPcmAudio(arrayBuffer) {
+    /*
+     * Recover if playback has fallen behind.
+     */
+    if (
+        nextPlayTime
+        <
+        now + 0.02
+    ) {
 
-        if (!audioContext) {
-            return;
-        }
-
-
-        const view =
-            new DataView(
-                arrayBuffer
-            );
-
-
-        const sampleCount =
-            Math.floor(
-                view.byteLength / 2
-            );
-
-
-        if (sampleCount === 0) {
-            return;
-        }
-
-
-        const audioBuffer =
-            audioContext.createBuffer(
-                1,
-                sampleCount,
-                16000
-            );
-
-
-        const channel =
-            audioBuffer.getChannelData(0);
-
-
-        for (
-            let i = 0;
-            i < sampleCount;
-            i++
-        ) {
-
-            channel[i] =
-                view.getInt16(
-                    i * 2,
-                    true
-                )
-                /
-                32768;
-        }
-
-
-        const source =
-            audioContext
-                .createBufferSource();
-
-
-        source.buffer =
-            audioBuffer;
-
-
-        source.connect(
-            audioContext.destination
-        );
-
-
-        const now =
-            audioContext.currentTime;
-
-
-        if (
-            nextPlayTime < now
-            ||
-            nextPlayTime - now > 0.25
-        ) {
-
-            nextPlayTime =
-                now;
-        }
-
-
-        source.start(
-            nextPlayTime
-        );
-
-
-        nextPlayTime +=
-            audioBuffer.duration;
+        nextPlayTime =
+            now
+            +
+            0.06;
     }
+
+
+    /*
+     * Recover if too much delayed audio has accumulated.
+     */
+    if (
+        nextPlayTime - now
+        >
+        0.60
+    ) {
+
+        nextPlayTime =
+            now
+            +
+            AUDIO_START_BUFFER_SECONDS;
+    }
+
+
+    const source =
+        audioContext.createBufferSource();
+
+
+    source.buffer =
+        audioBuffer;
+
+
+    source.connect(
+        audioContext.destination
+    );
+
+
+    source.start(
+        nextPlayTime
+    );
+
+
+    nextPlayTime +=
+        audioBuffer.duration;
+}
 
 
     // =========================
