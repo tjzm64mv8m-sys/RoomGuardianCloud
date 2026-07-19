@@ -177,7 +177,7 @@ const server = http.createServer((req, res) => {
 
             .video-container img.front-camera {
     transform:
-        rotate(180deg);
+        rotate(270deg);
 }
         }
 
