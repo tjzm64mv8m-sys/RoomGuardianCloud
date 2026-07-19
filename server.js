@@ -381,6 +381,11 @@ const server = http.createServer((req, res) => {
         "switchCameraButton"
     );
 
+    const liveImage =
+    document.querySelector(
+        ".video-container img"
+    );
+
     const talkButton =
         document.getElementById(
             "talkButton"
@@ -406,6 +411,8 @@ let talking = false;
 
 let cameraControlSocket = null;
 
+let frontCameraSelected = false;
+
 let pendingRemoteIceCandidates = [];
 
 // =========================
@@ -421,6 +428,26 @@ switchCameraButton.addEventListener(
             "https:"
                 ? "wss:"
                 : "ws:";
+
+        const sendSwitchCommand = () => {
+
+            cameraControlSocket.send(
+                "switch-camera"
+            );
+
+            frontCameraSelected =
+                !frontCameraSelected;
+
+            liveImage.classList.toggle(
+                "front-camera",
+                frontCameraSelected
+            );
+
+            status.textContent =
+                frontCameraSelected
+                    ? "📷 Front camera selected"
+                    : "📷 Back camera selected";
+        };
 
         if (
             !cameraControlSocket
@@ -438,15 +465,7 @@ switchCameraButton.addEventListener(
                 );
 
             cameraControlSocket.onopen =
-                () => {
-
-                    cameraControlSocket.send(
-                        "switch-camera"
-                    );
-
-                    status.textContent =
-                        "🔄 Switching camera...";
-                };
+                sendSwitchCommand;
 
             cameraControlSocket.onerror =
                 () => {
@@ -458,12 +477,7 @@ switchCameraButton.addEventListener(
             return;
         }
 
-        cameraControlSocket.send(
-            "switch-camera"
-        );
-
-        status.textContent =
-            "🔄 Switching camera...";
+        sendSwitchCommand();
     }
 );
 
