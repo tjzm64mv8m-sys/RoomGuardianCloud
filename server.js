@@ -342,6 +342,10 @@ const server = http.createServer((req, res) => {
 
         </div>
 
+        <button id="switchCameraButton">
+    🔄 Switch Camera
+</button>
+
         <button id="talkButton">
             🎤 Hold to Talk
         </button>
@@ -367,6 +371,11 @@ const server = http.createServer((req, res) => {
             "audioOffButton"
         );
 
+        const switchCameraButton =
+    document.getElementById(
+        "switchCameraButton"
+    );
+
     const talkButton =
         document.getElementById(
             "talkButton"
@@ -389,7 +398,69 @@ let rtcStream = null;
 let rtcMicrophoneTrack = null;
 let rtcReady = false;
 let talking = false;
+
+let cameraControlSocket = null;
+
 let pendingRemoteIceCandidates = [];
+
+// =========================
+// CAMERA CONTROL
+// =========================
+
+switchCameraButton.addEventListener(
+    "click",
+    () => {
+
+        const protocol =
+            window.location.protocol ===
+            "https:"
+                ? "wss:"
+                : "ws:";
+
+        if (
+            !cameraControlSocket
+            ||
+            cameraControlSocket.readyState !==
+                WebSocket.OPEN
+        ) {
+
+            cameraControlSocket =
+                new WebSocket(
+                    protocol
+                    + "//"
+                    + window.location.host
+                    + "/camera-control"
+                );
+
+            cameraControlSocket.onopen =
+                () => {
+
+                    cameraControlSocket.send(
+                        "switch-camera"
+                    );
+
+                    status.textContent =
+                        "🔄 Switching camera...";
+                };
+
+            cameraControlSocket.onerror =
+                () => {
+
+                    status.textContent =
+                        "❌ Camera control error";
+                };
+
+            return;
+        }
+
+        cameraControlSocket.send(
+            "switch-camera"
+        );
+
+        status.textContent =
+            "🔄 Switching camera...";
+    }
+);
 
 
     // =========================
@@ -1306,6 +1377,59 @@ wss.on(
 
             return;
         }
+
+        // Browser camera-control socket
+if (
+    req.url
+    === "/camera-control"
+) {
+
+    console.log(
+        "Camera-control browser connected"
+    );
+
+    ws.on(
+        "message",
+        message => {
+
+            const command =
+                message.toString();
+
+            if (
+                command !==
+                "switch-camera"
+            ) {
+                return;
+            }
+
+            if (
+                deviceSocket
+                &&
+                deviceSocket.readyState
+                    === WebSocket.OPEN
+            ) {
+
+                deviceSocket.send(
+                    Buffer.from([
+                        0x06
+                    ])
+                );
+            }
+        }
+    );
+
+    ws.on(
+        "close",
+        () => {
+
+            console.log(
+                "Camera-control browser disconnected"
+            );
+        }
+    );
+
+    return;
+}
 
 
         // Main Samsung stream socket
