@@ -438,10 +438,10 @@ switchCameraButton.addEventListener(
             frontCameraSelected =
                 !frontCameraSelected;
 
-            liveImage.classList.toggle(
-                "front-camera",
-                frontCameraSelected
-            );
+            liveImage.style.transform =
+    frontCameraSelected
+        ? "rotate(270deg)"
+        : "rotate(90deg)";
 
             status.textContent =
                 frontCameraSelected
