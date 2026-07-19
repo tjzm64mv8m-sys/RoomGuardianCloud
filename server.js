@@ -383,11 +383,13 @@ const server = http.createServer((req, res) => {
     let nextPlayTime = 0;
 
 
-    let talkSocket = null;
-    let talkStream = null;
-    let talkAudioContext = null;
-    let talkProcessor = null;
-    let talking = false;
+    let rtcSocket = null;
+let rtcPeerConnection = null;
+let rtcStream = null;
+let rtcMicrophoneTrack = null;
+let rtcReady = false;
+let talking = false;
+let pendingRemoteIceCandidates = [];
 
 
     // =========================
@@ -648,35 +650,35 @@ const server = http.createServer((req, res) => {
             audioBuffer.duration;
     }
 
-
-    // =========================
-    // TALKBACK
+        // =========================
+    // WEBRTC TALKBACK
     // =========================
 
     talkButton.addEventListener(
         "pointerdown",
         event => {
+            event.preventDefault();
 
-            talkButton.setPointerCapture(
-                event.pointerId
-            );
+            try {
+                talkButton.setPointerCapture(
+                    event.pointerId
+                );
+            } catch (ignored) {
+            }
 
-            startTalk(event);
+            startTalk();
         }
     );
-
 
     talkButton.addEventListener(
         "pointerup",
         stopTalk
     );
 
-
     talkButton.addEventListener(
         "pointercancel",
         stopTalk
     );
-
 
     talkButton.addEventListener(
         "lostpointercapture",
@@ -684,180 +686,49 @@ const server = http.createServer((req, res) => {
     );
 
 
-    async function startTalk(event) {
-
-        if (event) {
-            event.preventDefault();
-        }
-
+    async function startTalk() {
 
         if (talking) {
             return;
         }
 
-
         talking = true;
 
-
         talkButton.textContent =
-            "🔴 Talking...";
-
+            "🔴 Connecting...";
 
         talkButton.classList.add(
             "talking"
         );
 
-
         try {
 
-            talkStream =
-                await navigator
-                    .mediaDevices
-                    .getUserMedia({
+            await ensureWebRtcTalkback();
 
-                        audio: {
-                            echoCancellation: true,
-                            noiseSuppression: true,
-                            autoGainControl: true,
-                            channelCount: 1
-                        },
+            if (rtcMicrophoneTrack) {
+                rtcMicrophoneTrack.enabled = true;
+            }
 
-                        video: false
-                    });
+            talkButton.textContent =
+                "🔴 Talking...";
 
-
-            const AudioContextClass =
-                window.AudioContext
-                ||
-                window.webkitAudioContext;
-
-
-            talkAudioContext =
-                new AudioContextClass();
-
-
-            await talkAudioContext.resume();
-
-
-            const protocol =
-                window.location.protocol
-                === "https:"
-                    ? "wss:"
-                    : "ws:";
-
-
-            talkSocket =
-                new WebSocket(
-                    protocol
-                    + "//"
-                    + window.location.host
-                    + "/talk"
-                );
-
-
-            talkSocket.binaryType =
-                "arraybuffer";
-
-
-            const microphoneSource =
-                talkAudioContext
-                    .createMediaStreamSource(
-                        talkStream
-                    );
-
-
-            talkProcessor =
-                talkAudioContext
-                    .createScriptProcessor(
-                        2048,
-                        1,
-                        1
-                    );
-
-
-            talkProcessor.onaudioprocess =
-                audioEvent => {
-
-                    if (
-                        !talking
-                        ||
-                        !talkSocket
-                        ||
-                        talkSocket.readyState
-                            !== WebSocket.OPEN
-                    ) {
-
-                        return;
-                    }
-
-
-                    const input =
-                        audioEvent
-                            .inputBuffer
-                            .getChannelData(0);
-
-
-                    const downsampled =
-                        downsampleTo16000(
-                            input,
-                            talkAudioContext
-                                .sampleRate
-                        );
-
-
-                    const pcm16 =
-                        new Int16Array(
-                            downsampled.length
-                        );
-
-
-                    for (
-                        let i = 0;
-                        i < downsampled.length;
-                        i++
-                    ) {
-
-                        const sample =
-                            Math.max(
-                                -1,
-                                Math.min(
-                                    1,
-                                    downsampled[i]
-                                )
-                            );
-
-
-                        pcm16[i] =
-                            sample < 0
-                                ? sample * 32768
-                                : sample * 32767;
-                    }
-
-
-                    talkSocket.send(
-                        pcm16.buffer
-                    );
-                };
-
-
-            microphoneSource.connect(
-                talkProcessor
-            );
-
-
-            talkProcessor.connect(
-                talkAudioContext.destination
-            );
-
+            status.textContent =
+                "🎤 WebRTC talkback active";
 
         } catch (error) {
 
+            talking = false;
+
+            talkButton.textContent =
+                "🎤 Hold to Talk";
+
+            talkButton.classList.remove(
+                "talking"
+            );
+
             status.textContent =
-                "❌ Microphone error: "
+                "❌ WebRTC error: "
                 + error.message;
-
-
-            stopTalk();
         }
     }
 
@@ -868,176 +739,259 @@ const server = http.createServer((req, res) => {
             event.preventDefault();
         }
 
-
-        if (
-            !talking
-            &&
-            !talkStream
-            &&
-            !talkSocket
-            &&
-            !talkAudioContext
-        ) {
-
-            return;
-        }
-
-
         talking = false;
 
+        if (rtcMicrophoneTrack) {
+            rtcMicrophoneTrack.enabled = false;
+        }
 
         talkButton.textContent =
             "🎤 Hold to Talk";
-
 
         talkButton.classList.remove(
             "talking"
         );
 
-
-        if (talkProcessor) {
-
-            try {
-                talkProcessor.disconnect();
-
-            } catch (ignored) {
-            }
-
-
-            talkProcessor.onaudioprocess =
-                null;
-
-
-            talkProcessor = null;
-        }
-
-
-        if (talkStream) {
-
-            talkStream
-                .getTracks()
-                .forEach(
-                    track => track.stop()
-                );
-
-
-            talkStream = null;
-        }
-
-
-        if (talkSocket) {
-
-            try {
-                talkSocket.close();
-
-            } catch (ignored) {
-            }
-
-
-            talkSocket = null;
-        }
-
-
-        if (talkAudioContext) {
-
-            try {
-                talkAudioContext.close();
-
-            } catch (ignored) {
-            }
-
-
-            talkAudioContext = null;
+        if (rtcReady) {
+            status.textContent =
+                "✅ WebRTC ready";
         }
     }
 
 
-    function downsampleTo16000(
-        input,
-        inputSampleRate
-    ) {
-
-        const outputSampleRate =
-            16000;
-
+    async function ensureWebRtcTalkback() {
 
         if (
-            inputSampleRate
-            === outputSampleRate
+            rtcPeerConnection &&
+            rtcReady
         ) {
-
-            return input;
+            return;
         }
 
+        if (!rtcStream) {
 
-        const ratio =
-            inputSampleRate
-            /
-            outputSampleRate;
+            rtcStream =
+                await navigator.mediaDevices
+                    .getUserMedia({
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true,
+                            channelCount: 1
+                        },
+                        video: false
+                    });
 
+            rtcMicrophoneTrack =
+                rtcStream
+                    .getAudioTracks()[0];
 
-        const outputLength =
-            Math.round(
-                input.length
-                /
-                ratio
-            );
+            rtcMicrophoneTrack.enabled =
+                false;
+        }
 
+        rtcPeerConnection =
+            new RTCPeerConnection({
+                iceServers: [
+                    {
+                        urls:
+                            "stun:stun.l.google.com:19302"
+                    }
+                ]
+            });
 
-        const output =
-            new Float32Array(
-                outputLength
-            );
+        rtcPeerConnection.addTrack(
+            rtcMicrophoneTrack,
+            rtcStream
+        );
 
+        rtcPeerConnection.onicecandidate =
+            event => {
 
-        let inputPosition = 0;
+                if (
+                    !event.candidate ||
+                    !rtcSocket ||
+                    rtcSocket.readyState !==
+                        WebSocket.OPEN
+                ) {
+                    return;
+                }
 
-
-        for (
-            let outputPosition = 0;
-            outputPosition < outputLength;
-            outputPosition++
-        ) {
-
-            const nextInputPosition =
-                Math.round(
-                    (
-                        outputPosition + 1
-                    )
-                    *
-                    ratio
+                rtcSocket.send(
+                    JSON.stringify({
+                        type: "ice",
+                        sdpMid:
+                            event.candidate.sdpMid,
+                        sdpMLineIndex:
+                            event.candidate
+                                .sdpMLineIndex,
+                        candidate:
+                            event.candidate.candidate
+                    })
                 );
+            };
 
+        rtcPeerConnection
+            .onconnectionstatechange =
+            () => {
 
-            let total = 0;
-            let count = 0;
+                const state =
+                    rtcPeerConnection
+                        .connectionState;
 
+                if (state === "connected") {
 
-            for (
-                let i = inputPosition;
-                i < nextInputPosition
-                &&
-                i < input.length;
-                i++
-            ) {
+                    rtcReady = true;
 
-                total += input[i];
-                count++;
+                    status.textContent =
+                        talking
+                            ? "🎤 WebRTC talkback active"
+                            : "✅ WebRTC ready";
+
+                    return;
+                }
+
+                if (
+                    state === "failed" ||
+                    state === "disconnected" ||
+                    state === "closed"
+                ) {
+
+                    rtcReady = false;
+
+                    status.textContent =
+                        "❌ WebRTC "
+                        + state;
+                }
+            };
+
+        const protocol =
+            window.location.protocol ===
+            "https:"
+                ? "wss:"
+                : "ws:";
+
+        rtcSocket =
+            new WebSocket(
+                protocol
+                + "//"
+                + window.location.host
+                + "/webrtc-browser"
+            );
+
+        await new Promise(
+            (resolve, reject) => {
+
+                rtcSocket.onopen =
+                    resolve;
+
+                rtcSocket.onerror =
+                    () => reject(
+                        new Error(
+                            "signalling connection failed"
+                        )
+                    );
             }
+        );
 
+        rtcSocket.onmessage =
+            async event => {
 
-            output[outputPosition] =
-                count > 0
-                    ? total / count
-                    : 0;
+                try {
 
+                    const message =
+                        JSON.parse(
+                            event.data
+                        );
 
-            inputPosition =
-                nextInputPosition;
-        }
+                    if (
+                        message.type ===
+                        "answer"
+                    ) {
 
+                        await rtcPeerConnection
+                            .setRemoteDescription({
+                                type: "answer",
+                                sdp: message.sdp
+                            });
 
-        return output;
+                        for (
+                            const candidate
+                            of pendingRemoteIceCandidates
+                        ) {
+                            await rtcPeerConnection
+                                .addIceCandidate(
+                                    candidate
+                                );
+                        }
+
+                        pendingRemoteIceCandidates =
+                            [];
+
+                        return;
+                    }
+
+                    if (
+                        message.type ===
+                        "ice"
+                    ) {
+
+                        const candidate =
+                            new RTCIceCandidate({
+                                sdpMid:
+                                    message.sdpMid,
+                                sdpMLineIndex:
+                                    message
+                                        .sdpMLineIndex,
+                                candidate:
+                                    message.candidate
+                            });
+
+                        if (
+                            rtcPeerConnection
+                                .remoteDescription
+                        ) {
+
+                            await rtcPeerConnection
+                                .addIceCandidate(
+                                    candidate
+                                );
+
+                        } else {
+
+                            pendingRemoteIceCandidates
+                                .push(
+                                    candidate
+                                );
+                        }
+                    }
+
+                } catch (error) {
+
+                    status.textContent =
+                        "❌ WebRTC message error: "
+                        + error.message;
+                }
+            };
+
+        const offer =
+            await rtcPeerConnection
+                .createOffer({
+                    offerToReceiveAudio:
+                        false
+                });
+
+        await rtcPeerConnection
+            .setLocalDescription(
+                offer
+            );
+
+        rtcSocket.send(
+            JSON.stringify({
+                type: "offer",
+                sdp: offer.sdp
+            })
+        );
     }
 
 </script>
