@@ -1863,6 +1863,38 @@ wss.on(
 
                     audioPacketCounter++;
 
+                    if (
+    audioPacketCounter
+    %
+    50
+    === 0
+) {
+
+    let peak = 0;
+
+    for (
+        let i = 0;
+        i + 1 < payload.length;
+        i += 2
+    ) {
+
+        const sample =
+            payload.readInt16LE(i);
+
+        const level =
+            Math.abs(sample);
+
+        if (level > peak) {
+            peak = level;
+        }
+    }
+
+    console.log(
+        "Audio peak level: "
+        + peak
+    );
+}
+
                     for (
                         const viewer
                         of audioViewers
