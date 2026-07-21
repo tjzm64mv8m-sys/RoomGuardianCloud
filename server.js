@@ -675,10 +675,6 @@ async function startAudio(event) {
         event.preventDefault();
     }
 
-    /*
-     * Close any old or broken connection first.
-     * This prevents two audio streams playing together.
-     */
     closeAudioConnection();
 
     const AudioContextClass =
@@ -686,61 +682,140 @@ async function startAudio(event) {
         ||
         window.webkitAudioContext;
 
-    try {
+    audioContext =
+        new AudioContextClass();
 
-        audioContext =
-            new AudioContextClass({
-                sampleRate:
-                    AUDIO_SAMPLE_RATE
-            });
-
-    } catch (ignored) {
-
-        audioContext =
-            new AudioContextClass();
-    }
-
+    audioGain =
+        audioContext.createGain();
 
     /*
-     * Unlock audio playback on iPhone Safari.
+     * Slight boost because the Samsung room
+     * microphone signal is relatively quiet.
      */
-    const unlockBuffer =
-        audioContext.createBuffer(
-            1,
-            1,
-            AUDIO_SAMPLE_RATE
-        );
+    audioGain.gain.value =
+        2.0;
 
-    const unlockSource =
-        audioContext.createBufferSource();
-
-    unlockSource.buffer =
-        unlockBuffer;
-
-    unlockSource.connect(
+    audioGain.connect(
         audioContext.destination
     );
 
-    unlockSource.start(0);
+    /*
+     * ScriptProcessor is older technology,
+     * but it is reliable on iPhone Safari.
+     */
+    audioProcessor =
+        audioContext.createScriptProcessor(
+            2048,
+            0,
+            1
+        );
+
+    audioProcessor.connect(
+        audioGain
+    );
+
+    pcmQueue = [];
+    pcmReadPosition = 0;
+
+    audioProcessor.onaudioprocess =
+        event => {
+
+            const output =
+                event.outputBuffer
+                    .getChannelData(0);
+
+            const outputRate =
+                audioContext.sampleRate;
+
+            const inputStep =
+                AUDIO_SAMPLE_RATE
+                /
+                outputRate;
+
+            for (
+                let i = 0;
+                i < output.length;
+                i++
+            ) {
+
+                while (
+                    pcmQueue.length > 0
+                    &&
+                    pcmReadPosition
+                        >= pcmQueue[0].length
+                ) {
+
+                    pcmReadPosition -=
+                        pcmQueue[0].length;
+
+                    pcmQueue.shift();
+                }
+
+                if (
+                    pcmQueue.length === 0
+                ) {
+
+                    output[i] = 0;
+                    continue;
+                }
+
+                const currentPacket =
+                    pcmQueue[0];
+
+                const sampleIndex =
+                    Math.floor(
+                        pcmReadPosition
+                    );
+
+                const nextIndex =
+                    Math.min(
+                        sampleIndex + 1,
+                        currentPacket.length - 1
+                    );
+
+                const fraction =
+                    pcmReadPosition
+                    -
+                    sampleIndex;
+
+                const firstSample =
+                    currentPacket[
+                        sampleIndex
+                    ];
+
+                const secondSample =
+                    currentPacket[
+                        nextIndex
+                    ];
+
+                output[i] =
+                    firstSample
+                    +
+                    (
+                        secondSample
+                        -
+                        firstSample
+                    )
+                    *
+                    fraction;
+
+                pcmReadPosition +=
+                    inputStep;
+            }
+        };
 
     await audioContext.resume();
-
-
-    nextPlayTime = 0;
-    audioStarted = false;
 
     audioConnectionNumber++;
 
     const thisConnection =
         audioConnectionNumber;
 
-
     const protocol =
         window.location.protocol
         === "https:"
             ? "wss:"
             : "ws:";
-
 
     audioSocket =
         new WebSocket(
@@ -750,10 +825,8 @@ async function startAudio(event) {
             + "/viewer"
         );
 
-
     audioSocket.binaryType =
         "arraybuffer";
-
 
     audioSocket.onopen =
         () => {
@@ -765,13 +838,12 @@ async function startAudio(event) {
                 return;
             }
 
-            status.textContent =
-                "✅ Audio connected";
-
             audioOnButton.textContent =
                 "✅ Audio Enabled";
-        };
 
+            status.textContent =
+                "✅ Room audio connected";
+        };
 
     audioSocket.onmessage =
         event => {
@@ -783,11 +855,10 @@ async function startAudio(event) {
                 return;
             }
 
-            playPcmAudio(
+            queuePcmAudio(
                 event.data
             );
         };
-
 
     audioSocket.onerror =
         () => {
@@ -803,7 +874,6 @@ async function startAudio(event) {
                 "❌ Audio connection error";
         };
 
-
     audioSocket.onclose =
         () => {
 
@@ -814,12 +884,72 @@ async function startAudio(event) {
                 return;
             }
 
-            if (audioContext) {
-
-                status.textContent =
-                    "❌ Audio disconnected";
-            }
+            status.textContent =
+                "❌ Audio disconnected";
         };
+}
+
+
+function queuePcmAudio(arrayBuffer) {
+
+    if (!arrayBuffer) {
+        return;
+    }
+
+    const view =
+        new DataView(
+            arrayBuffer
+        );
+
+    const sampleCount =
+        Math.floor(
+            view.byteLength / 2
+        );
+
+    if (sampleCount <= 0) {
+        return;
+    }
+
+    const samples =
+        new Float32Array(
+            sampleCount
+        );
+
+    for (
+        let i = 0;
+        i < sampleCount;
+        i++
+    ) {
+
+        samples[i] =
+            view.getInt16(
+                i * 2,
+                true
+            )
+            /
+            32768;
+    }
+
+    pcmQueue.push(
+        samples
+    );
+
+    /*
+     * Prevent many seconds of delayed audio
+     * building up on a poor connection.
+     */
+    if (
+        pcmQueue.length > 25
+    ) {
+
+        pcmQueue.splice(
+            0,
+            pcmQueue.length - 12
+        );
+
+        pcmReadPosition =
+            0;
+    }
 }
 
 
@@ -858,6 +988,30 @@ function closeAudioConnection() {
         audioSocket = null;
     }
 
+    if (audioProcessor) {
+
+        audioProcessor.onaudioprocess =
+            null;
+
+        try {
+            audioProcessor.disconnect();
+        } catch (ignored) {
+        }
+
+        audioProcessor =
+            null;
+    }
+
+    if (audioGain) {
+
+        try {
+            audioGain.disconnect();
+        } catch (ignored) {
+        }
+
+        audioGain =
+            null;
+    }
 
     if (audioContext) {
 
@@ -866,146 +1020,13 @@ function closeAudioConnection() {
         } catch (ignored) {
         }
 
-        audioContext = null;
+        audioContext =
+            null;
     }
 
-
-    nextPlayTime = 0;
-    audioStarted = false;
+    pcmQueue = [];
+    pcmReadPosition = 0;
 }
-
-
-function playPcmAudio(arrayBuffer) {
-
-    if (
-        !audioContext
-        ||
-        audioContext.state === "closed"
-    ) {
-        return;
-    }
-
-
-    const view =
-        new DataView(
-            arrayBuffer
-        );
-
-
-    const sampleCount =
-        Math.floor(
-            view.byteLength / 2
-        );
-
-
-    if (sampleCount <= 0) {
-        return;
-    }
-
-
-    const audioBuffer =
-        audioContext.createBuffer(
-            1,
-            sampleCount,
-            AUDIO_SAMPLE_RATE
-        );
-
-
-    const channel =
-        audioBuffer.getChannelData(0);
-
-
-    for (
-        let i = 0;
-        i < sampleCount;
-        i++
-    ) {
-
-        channel[i] =
-            view.getInt16(
-                i * 2,
-                true
-            )
-            /
-            32768;
-    }
-
-
-    const now =
-        audioContext.currentTime;
-
-
-    /*
-     * Start with a small buffer.
-     * This absorbs normal internet jitter and prevents
-     * broken, robotic or rapidly repeating audio.
-     */
-    if (!audioStarted) {
-
-        nextPlayTime =
-            now
-            +
-            AUDIO_START_BUFFER_SECONDS;
-
-        audioStarted =
-            true;
-    }
-
-
-    /*
-     * Recover if playback has fallen behind.
-     */
-    if (
-        nextPlayTime
-        <
-        now + 0.02
-    ) {
-
-        nextPlayTime =
-            now
-            +
-            0.06;
-    }
-
-
-    /*
-     * Recover if too much delayed audio has accumulated.
-     */
-    if (
-        nextPlayTime - now
-        >
-        0.60
-    ) {
-
-        nextPlayTime =
-            now
-            +
-            AUDIO_START_BUFFER_SECONDS;
-    }
-
-
-    const source =
-        audioContext.createBufferSource();
-
-
-    source.buffer =
-        audioBuffer;
-
-
-    source.connect(
-        audioContext.destination
-    );
-
-
-    source.start(
-        nextPlayTime
-    );
-
-
-    nextPlayTime +=
-        audioBuffer.duration;
-}
-
 
     // =========================
     // WEBRTC TALKBACK
